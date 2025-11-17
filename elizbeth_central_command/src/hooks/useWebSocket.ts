@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { type ShotStopperData } from "~/types/shotstopper";
+import { type ShotStopperData, type EndType } from "~/types/shotstopper";
 
 interface UseWebSocketOptions {
   url: string;
@@ -66,7 +66,20 @@ export function useWebSocket({
       ws.onmessage = (event) => {
         try {
           // ESP32 now sends data directly (no wrapper from Node.js server)
-          const espData = JSON.parse(event.data);
+          const espData = JSON.parse(event.data as string) as {
+            timestamp?: number;
+            currentWeight?: number;
+            weight?: number;
+            shotTimer?: number;
+            timer?: number;
+            brewing?: boolean;
+            isBrewing?: boolean;
+            goalWeight?: number;
+            weightOffset?: number;
+            expectedEndTime?: number;
+            endType?: EndType;
+            datapoints?: number;
+          };
           
           // Map ESP32 data to ShotStopperData format
           // ESP32 timestamp is in seconds (millis() / 1000), convert to ISO string
@@ -93,7 +106,7 @@ export function useWebSocket({
 
           setData(shotData);
           setLastMessageTime(timestamp);
-        } catch (err) {
+        } catch {
           setError("Failed to parse message from ESP32");
         }
       };
@@ -115,7 +128,7 @@ export function useWebSocket({
           }, reconnectInterval);
         }
       };
-    } catch (err) {
+    } catch {
       setError("Failed to create WebSocket connection");
       isConnectingRef.current = false;
 
@@ -140,7 +153,7 @@ export function useWebSocket({
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       try {
         wsRef.current.send(JSON.stringify(message));
-      } catch (err) {
+      } catch {
         setError("Failed to send message to ESP32");
       }
     } else {

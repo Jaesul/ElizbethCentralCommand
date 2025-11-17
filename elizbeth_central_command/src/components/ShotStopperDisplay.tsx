@@ -64,7 +64,7 @@ export function ShotStopperDisplay({ data, isConnected = false, sendMessage }: S
   }
 
   const formatNumber = (value: number | undefined, decimals = 1) => {
-    if (value === undefined) return "---";
+    if (value === undefined || isNaN(value)) return "0.0";
     return value.toFixed(decimals);
   };
 
@@ -91,22 +91,20 @@ export function ShotStopperDisplay({ data, isConnected = false, sendMessage }: S
         <CardContent>
           <div className="space-y-4">
             {/* Current Weight - Large Display */}
-            <div className="text-center">
+            <div className="text-center min-h-[100px] flex flex-col justify-center">
               <div className="text-sm text-muted-foreground mb-2">Current Weight</div>
               <div className="text-5xl font-bold">
                 {formatNumber(data.currentWeight)} <span className="text-2xl text-muted-foreground">g</span>
               </div>
             </div>
 
-            {/* Shot Timer */}
-            {data.shotTimer !== undefined && (
-              <div className="text-center">
-                <div className="text-sm text-muted-foreground mb-1">Shot Timer</div>
-                <div className="text-3xl font-semibold">
-                  {formatNumber(data.shotTimer)} <span className="text-lg text-muted-foreground">s</span>
-                </div>
+            {/* Shot Timer - Always render to prevent layout shift */}
+            <div className="text-center min-h-[80px] flex flex-col justify-center">
+              <div className="text-sm text-muted-foreground mb-1">Shot Timer</div>
+              <div className="text-3xl font-semibold">
+                {formatNumber(data.shotTimer)} <span className="text-lg text-muted-foreground">s</span>
               </div>
-            )}
+            </div>
 
             {/* Start/Stop Controls */}
             {sendMessage && (
@@ -117,9 +115,9 @@ export function ShotStopperDisplay({ data, isConnected = false, sendMessage }: S
                   }}
                   disabled={data.brewing}
                   variant={data.brewing ? "secondary" : "default"}
-                  className="flex-1"
+                  className="flex-1 min-w-0"
                 >
-                  {data.brewing ? "Brewing..." : "Start Shot"}
+                  <span className="inline-block w-full text-center">Start Shot</span>
                 </Button>
                 <Button
                   onClick={() => {
@@ -127,9 +125,9 @@ export function ShotStopperDisplay({ data, isConnected = false, sendMessage }: S
                   }}
                   disabled={!data.brewing}
                   variant={!data.brewing ? "secondary" : "destructive"}
-                  className="flex-1"
+                  className="flex-1 min-w-0"
                 >
-                  Stop Shot
+                  <span className="inline-block w-full text-center">Stop Shot</span>
                 </Button>
               </div>
             )}

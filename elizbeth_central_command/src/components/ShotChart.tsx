@@ -101,9 +101,14 @@ export function ShotChart({ dataPoints, isBrewing, goalWeight }: ShotChartProps)
 
       // Drop old samples outside history window (time-based pruning like FlowCald.ts)
       const cutoff = timeMs - HISTORY_MS;
-      while (state.times.length > 0 && state.times[0] !== undefined && state.times[0] < cutoff) {
-        state.times.shift();
-        state.weights.shift();
+      while (state.times.length > 0) {
+        const firstTime = state.times[0];
+        if (firstTime !== undefined && firstTime < cutoff) {
+          state.times.shift();
+          state.weights.shift();
+        } else {
+          break;
+        }
       }
 
       let flowRate: number | undefined;
@@ -122,14 +127,24 @@ export function ShotChart({ dataPoints, isBrewing, goalWeight }: ShotChartProps)
           let j = i - 1;
 
           // Walk backward until we find a point older than our target window
-          while (j > 0 && state.times[j] !== undefined && state.times[j]! > targetTime) {
-            j--;
+          while (j > 0) {
+            const jTime = state.times[j];
+            if (jTime !== undefined && jTime > targetTime) {
+              j--;
+            } else {
+              break;
+            }
           }
 
           // Ensure we have valid indices
-          if (j >= 0 && state.times[j] !== undefined && state.weights[j] !== undefined && state.weights[i] !== undefined) {
-            const dt = (state.times[i]! - state.times[j]!) / 1000; // Convert to seconds
-            const dw = state.weights[i]! - state.weights[j]!;
+          const jTime = state.times[j];
+          const jWeight = state.weights[j];
+          const iTime = state.times[i];
+          const iWeight = state.weights[i];
+          
+          if (j >= 0 && jTime !== undefined && jWeight !== undefined && iTime !== undefined && iWeight !== undefined) {
+            const dt = (iTime - jTime) / 1000; // Convert to seconds
+            const dw = iWeight - jWeight;
 
             let flowRaw = 0;
 

@@ -130,7 +130,7 @@ const chartConfig = {
 } satisfies ChartConfig
 
 export default function TestChart() {
-  const [timeRange, setTimeRange] = React.useState("90d")
+  const [timeRange] = React.useState("90d")
 
   const filteredData = chartData.filter((item) => {
     const date = new Date(item.date)
@@ -195,7 +195,7 @@ export default function TestChart() {
               axisLine={false}
               tickMargin={8}
               minTickGap={32}
-              tickFormatter={(value) => {
+              tickFormatter={(value: string | number | Date) => {
                 const date = new Date(value)
                 return date.toLocaleDateString("en-US", {
                   month: "short",
@@ -207,7 +207,7 @@ export default function TestChart() {
               cursor={false}
               content={
                 <ChartTooltipContent
-                  labelFormatter={(value) => {
+                  labelFormatter={(value: string | number | Date) => {
                     return new Date(value).toLocaleDateString("en-US", {
                       month: "short",
                       day: "numeric",

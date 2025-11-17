@@ -51,7 +51,8 @@ export function useShotHistory(data: ShotStopperData | null) {
 
         // Safety check: if prev has points but time is less than 0.5s, might be contamination
         // Clear if we detect a reset (shot timer goes back to near 0)
-        if (prev.length > 0 && time < 0.5 && prev[prev.length - 1] && prev[prev.length - 1].time > 1.0) {
+        const lastPoint = prev[prev.length - 1];
+        if (prev.length > 0 && time < 0.5 && lastPoint && lastPoint.time > 1.0) {
           // Time went backwards significantly - new shot started
           // Only add if weight is above threshold (not pre-tare)
           if (Math.abs(weight) >= WEIGHT_THRESHOLD) {
@@ -61,15 +62,14 @@ export function useShotHistory(data: ShotStopperData | null) {
         }
 
         // Only update if this is the exact same time and weight (true duplicate)
-        const lastPoint = prev[prev.length - 1];
         
         // If same time AND same weight, skip (true duplicate)
-        if (lastPoint && lastPoint.time === time && Math.abs(lastPoint.weight - weight) < 0.01) {
+        if (lastPoint?.time === time && Math.abs((lastPoint.weight ?? 0) - weight) < 0.01) {
           return prev; // Skip true duplicates
         }
 
         // If same time but different weight, update it
-        if (lastPoint && lastPoint.time === time) {
+        if (lastPoint?.time === time) {
           return [...prev.slice(0, -1), { time, weight }];
         }
 
