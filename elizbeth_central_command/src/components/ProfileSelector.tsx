@@ -1,0 +1,278 @@
+"use client";
+
+import { useState, useRef } from "react";
+import { useRouter } from "next/navigation";
+import { ChevronLeft, ChevronRight, Plus, Trash2, Edit, Play } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import { Button } from "~/components/ui/button";
+import { Badge } from "~/components/ui/badge";
+import { ProfileGraph } from "~/components/ProfileGraph";
+import type { PressureProfile } from "~/types/profiles";
+import { generateProfileData, calculateTotalDuration } from "~/lib/profileUtils";
+
+interface ProfileSelectorProps {
+  profiles: PressureProfile[];
+  selectedProfileId: string | null;
+  onSelectProfile: (id: string) => void;
+  onDeleteProfile: (id: string) => void;
+  onStartShot?: (profileId: string) => void;
+  isConnected?: boolean;
+  isBrewing?: boolean;
+}
+
+export function ProfileSelector({
+  profiles,
+  selectedProfileId,
+  onSelectProfile,
+  onDeleteProfile,
+  onStartShot,
+  isConnected = false,
+  isBrewing = false,
+}: ProfileSelectorProps) {
+  const router = useRouter();
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
+
+  const scroll = (direction: "left" | "right") => {
+    if (!scrollContainerRef.current) return;
+    const container = scrollContainerRef.current;
+    const scrollAmount = 300;
+    container.scrollBy({
+      left: direction === "left" ? -scrollAmount : scrollAmount,
+      behavior: "smooth",
+    });
+  };
+
+  const handleDelete = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (showDeleteConfirm === id) {
+      onDeleteProfile(id);
+      setShowDeleteConfirm(null);
+    } else {
+      setShowDeleteConfirm(id);
+    }
+  };
+
+  if (profiles.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Profiles</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Button onClick={() => router.push("/profiles/new")} className="w-full">
+            <Plus className="mr-2 h-4 w-4" />
+            Create First Profile
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle>Shot Profiles</CardTitle>
+          <Button onClick={() => router.push("/profiles/new")} size="sm" variant="outline">
+            <Plus className="mr-2 h-4 w-4" />
+            New Profile
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="relative">
+          {/* Left scroll button */}
+          <Button
+            variant="outline"
+            size="icon"
+            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 h-8 w-8 bg-background/80 backdrop-blur-sm"
+            onClick={() => scroll("left")}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+
+          {/* Scrollable carousel */}
+          <div
+            ref={scrollContainerRef}
+            className="flex gap-6 overflow-x-auto px-10 py-8 [&::-webkit-scrollbar]:hidden cursor-default"
+            style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+            onClick={(e) => {
+              // Only select profile if clicking on the card itself, not buttons
+              const target = e.target as HTMLElement;
+              if (target.closest('button') || target.closest('[role="button"]')) {
+                return;
+              }
+              const card = target.closest('[data-profile-id]');
+              if (card) {
+                const profileId = card.getAttribute('data-profile-id');
+                if (profileId) {
+                  onSelectProfile(profileId);
+                }
+              }
+            }}
+          >
+            {profiles.map((profile) => {
+              const isSelected = profile.id === selectedProfileId;
+              const graphData = generateProfileData(profile);
+              const totalDuration = calculateTotalDuration(profile);
+
+              return (
+                <div
+                  key={profile.id}
+                  data-profile-id={profile.id}
+                  className={`shrink-0 w-[370px] transition-all ${
+                    isSelected ? "scale-105" : "opacity-75 hover:opacity-100"
+                  }`}
+                >
+                  <Card
+                    className={`h-full ${
+                      isSelected
+                        ? "border-2 border-primary shadow-md"
+                        : "border hover:border-primary/50"
+                    }`}
+                  >
+                    <CardHeader className="pb-2">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <CardTitle className="text-lg">{profile.name}</CardTitle>
+                          {isSelected && (
+                            <Badge variant="default" className="mt-1">
+                              Active
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              router.push(`/profiles/${profile.id}`);
+                            }}
+                          >
+                            <Edit className="h-3 w-3" />
+                          </Button>
+                          {profiles.length > 1 && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 text-destructive hover:text-destructive"
+                              onClick={(e) => handleDelete(profile.id, e)}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="pt-0 space-y-4">
+                      {/* Profile Graph */}
+                      <div>
+                        <ProfileGraph data={graphData} height={180} inline />
+                      </div>
+
+                      {/* Profile Metrics */}
+                      <div className="space-y-1.5 text-sm text-muted-foreground pt-2 border-t">
+                        <div className="flex justify-between">
+                          <span>PI:</span>
+                          <span className="font-medium text-foreground">
+                            {profile.preInfusion.duration}s @ {profile.preInfusion.pressure} bar
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Ramp:</span>
+                          <span className="font-medium text-foreground">
+                            to {profile.ramp.targetPressure} bar over {profile.ramp.duration}s
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Hold:</span>
+                          <span className="font-medium text-foreground">
+                            {profile.hold.pressure} bar for {profile.hold.duration}s
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Decline:</span>
+                          <span className="font-medium text-foreground">
+                            to {profile.decline.targetPressure} bar over {profile.decline.duration}s
+                          </span>
+                        </div>
+                        <div className="flex justify-between pt-1 border-t">
+                          <span>Stop:</span>
+                          <span className="font-medium text-foreground">
+                            at {profile.stop.weight}g | Total: {totalDuration.toFixed(1)}s
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Brew Button */}
+                      {onStartShot && (
+                        <Button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onStartShot(profile.id);
+                          }}
+                          disabled={!isConnected || isBrewing}
+                          className="w-full"
+                          size="sm"
+                        >
+                          <Play className="mr-2 h-4 w-4" />
+                          Brew
+                        </Button>
+                      )}
+                      {showDeleteConfirm === profile.id && (
+                        <div className="mt-2 p-2 bg-destructive/10 border border-destructive rounded text-xs">
+                          <div className="mb-1 text-destructive font-medium">
+                            Delete this profile?
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              className="h-6 text-xs"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDeleteProfile(profile.id);
+                                setShowDeleteConfirm(null);
+                              }}
+                            >
+                              Delete
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 text-xs"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setShowDeleteConfirm(null);
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Right scroll button */}
+          <Button
+            variant="outline"
+            size="icon"
+            className="absolute right-0 top-1/2 -translate-y-1/2 z-10 h-8 w-8 bg-background/80 backdrop-blur-sm"
+            onClick={() => scroll("right")}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+

@@ -1,6 +1,5 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { type ShotStopperData } from "~/types/shotstopper";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
 import { Badge } from "~/components/ui/badge";
@@ -13,34 +12,6 @@ interface ShotStopperDisplayProps {
 }
 
 export function ShotStopperDisplay({ data, isConnected = false, sendMessage }: ShotStopperDisplayProps) {
-  const [goalWeightInput, setGoalWeightInput] = useState<string>("");
-  const [isSettingWeight, setIsSettingWeight] = useState(false);
-
-  const handleSetGoalWeight = () => {
-    const weight = parseInt(goalWeightInput, 10);
-    if (isNaN(weight) || weight < 10 || weight > 200) {
-      return;
-    }
-
-    if (sendMessage) {
-      setIsSettingWeight(true);
-      sendMessage({
-        command: "setGoalWeight",
-        goalWeight: weight,
-      });
-      
-      // Reset input after sending
-      setGoalWeightInput("");
-      
-      // Reset loading state after a short delay
-      setTimeout(() => setIsSettingWeight(false), 500);
-    }
-  };
-
-  // Update input placeholder when data changes (for initial load)
-  useEffect(() => {
-    // Don't overwrite user input, just use data as reference
-  }, [data?.goalWeight]);
   if (!isConnected) {
     return (
       <Card>
@@ -135,57 +106,6 @@ export function ShotStopperDisplay({ data, isConnected = false, sendMessage }: S
         </CardContent>
       </Card>
 
-      {/* Goal and Settings */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Goal Weight</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              <div className="text-2xl font-semibold">
-                {data.goalWeight ?? "---"} <span className="text-sm text-muted-foreground">g</span>
-              </div>
-              {sendMessage && (
-                <div className="flex gap-2">
-                  <input
-                    type="number"
-                    min="10"
-                    max="200"
-                    value={goalWeightInput}
-                    onChange={(e) => setGoalWeightInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        handleSetGoalWeight();
-                      }
-                    }}
-                    placeholder={data.goalWeight?.toString() ?? "36"}
-                    className="flex-1 px-3 py-2 text-sm border border-input bg-background rounded-md focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                  <Button
-                    onClick={handleSetGoalWeight}
-                    disabled={isSettingWeight || !goalWeightInput || parseInt(goalWeightInput, 10) < 10 || parseInt(goalWeightInput, 10) > 200}
-                    size="sm"
-                  >
-                    {isSettingWeight ? "Setting..." : "Set"}
-                  </Button>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Weight Offset</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-semibold">
-              {formatNumber(data.weightOffset)} <span className="text-sm text-muted-foreground">g</span>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
 
       {/* Expected End Time (only show when brewing) */}
       {data.brewing && data.expectedEndTime !== undefined && (
@@ -216,32 +136,6 @@ export function ShotStopperDisplay({ data, isConnected = false, sendMessage }: S
         </Card>
       )}
 
-      {/* Additional Info */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {data.datapoints !== undefined && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Data Points</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-xl font-semibold">{data.datapoints}</div>
-            </CardContent>
-          </Card>
-        )}
-
-        {data.timestamp && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Last Update</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-sm text-muted-foreground">
-                {new Date(data.timestamp).toLocaleTimeString()}
-              </div>
-            </CardContent>
-          </Card>
-        )}
-      </div>
     </div>
   );
 }
