@@ -77,6 +77,19 @@ export function ShotStopperDisplay({ data, isConnected = false, sendMessage }: S
               </div>
             </div>
 
+            {/* Current Pressure - Always render to prevent layout shift */}
+            <div className="text-center min-h-[80px] flex flex-col justify-center">
+              <div className="text-sm text-muted-foreground mb-1">Current Pressure</div>
+              <div className="text-3xl font-semibold">
+                {formatNumber(data.currentPressure ?? data.pressureBar, 2)} <span className="text-lg text-muted-foreground">bar</span>
+              </div>
+              {data.pressurePSI !== undefined && (
+                <div className="text-sm text-muted-foreground mt-1">
+                  {formatNumber(data.pressurePSI, 1)} PSI
+                </div>
+              )}
+            </div>
+
             {/* Start/Stop Controls */}
             {sendMessage && (
               <div className="flex gap-2 pt-2">

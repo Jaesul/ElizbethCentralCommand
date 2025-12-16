@@ -32,14 +32,30 @@ const getWebSocketUrl = () => {
   return "ws://shotstopper-ws.local:81/ws";
 };
 
+// Determine Pressure WebSocket URL - separate ESP32 for pressure reading (optional, only if explicitly configured)
+const getPressureWebSocketUrl = () => {
+  if (typeof window === "undefined") return "";
+  
+  // Only connect to separate pressure reader if explicitly configured via environment variable
+  // By default, use the combined device which includes pressure data
+  const customUrl = process.env.NEXT_PUBLIC_PRESSURE_WS_URL;
+  if (customUrl) {
+    return customUrl;
+  }
+  
+  // Default: Don't connect to separate pressure reader (combined device provides pressure)
+  return "";
+};
+
 export function ShotStopperPage() {
   const wsUrl = getWebSocketUrl();
+  const pressureWsUrl = getPressureWebSocketUrl();
   const [mockData, setMockData] = useState<ShotStopperData | null>(null);
   const [monitoringDrawerOpen, setMonitoringDrawerOpen] = useState(false);
   
   const { isTestingMode, isLoaded: testingModeLoaded, setTestingMode } = useTestingMode();
   
-  // Real WebSocket connection (only when not in testing mode)
+  // Real WebSocket connection for ShotStopper (only when not in testing mode)
   const { 
     isConnected: wsConnected, 
     data: wsData, 
@@ -53,6 +69,18 @@ export function ShotStopperPage() {
     reconnectOnClose: true,
   });
 
+  // Separate WebSocket connection for pressure reader
+  const { 
+    isConnected: pressureWsConnected, 
+    data: pressureWsData, 
+    error: pressureWsError, 
+    reconnect: pressureWsReconnect
+  } = useWebSocket({
+    url: isTestingMode ? "" : pressureWsUrl, // Don't connect in testing mode
+    reconnectInterval: 5000,
+    reconnectOnClose: true,
+  });
+
   // Mock data generator (only when in testing mode)
   const { startMockShot, stopMockShot, resetMockShot, isBrewing: mockBrewing } = useMockDataGenerator({
     onData: setMockData,
@@ -60,9 +88,27 @@ export function ShotStopperPage() {
   });
 
   // Use mock data in testing mode, real data otherwise
-  const shotData = isTestingMode ? mockData : wsData;
-  const isConnected = isTestingMode ? true : wsConnected;
-  const error = isTestingMode ? undefined : wsError;
+  // Merge pressure data: prioritize baseShotData (combined device), fallback to separate pressure WebSocket
+  const baseShotData = isTestingMode ? mockData : wsData;
+  const shotData = baseShotData 
+    ? {
+        ...baseShotData,
+        // Prioritize pressure from baseShotData (combined device), fallback to separate pressure WebSocket
+        currentPressure: baseShotData.currentPressure ?? baseShotData.pressureBar ?? pressureWsData?.currentPressure ?? pressureWsData?.pressureBar,
+        pressurePSI: baseShotData.pressurePSI ?? pressureWsData?.pressurePSI,
+        pressureBar: baseShotData.pressureBar ?? baseShotData.currentPressure ?? pressureWsData?.pressureBar ?? pressureWsData?.currentPressure,
+      }
+    : pressureWsData 
+      ? {
+          // If only pressure data is available, create minimal data object
+          currentPressure: pressureWsData.currentPressure ?? pressureWsData.pressureBar,
+          pressurePSI: pressureWsData.pressurePSI,
+          pressureBar: pressureWsData.pressureBar ?? pressureWsData.currentPressure,
+        }
+      : null;
+  
+  const isConnected = isTestingMode ? true : (wsConnected || pressureWsConnected);
+  const error = isTestingMode ? undefined : (wsError || pressureWsError);
   const lastMessageTime = isTestingMode ? Date.now().toString() : wsLastMessageTime;
 
   // Handle sendMessage - disable in testing mode or make it control mock data
@@ -91,6 +137,7 @@ export function ShotStopperPage() {
   const handleReconnect = () => {
     if (!isTestingMode) {
       wsReconnect();
+      pressureWsReconnect();
     } else {
       resetMockShot();
     }
@@ -113,6 +160,9 @@ export function ShotStopperPage() {
   const handleStopShot = () => {
     sendMessage({ command: "stopShot" });
   };
+
+  // Use shot history directly (pressure is already merged in useShotHistory hook)
+  const mergedShotHistoryForDrawer = shotHistory;
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-6xl">
@@ -148,6 +198,7 @@ export function ShotStopperPage() {
         </div>
       </div>
 
+
       {/* Profile Selector - Front and center */}
       {profilesLoaded && (
         <div>
@@ -176,9 +227,6 @@ export function ShotStopperPage() {
       <Drawer 
         open={monitoringDrawerOpen} 
         onOpenChange={(open) => {
-          // Prevent closing if shot is actively 
-          // Allow closing when not brewing
-          console.log(open)
           setMonitoringDrawerOpen(open);
         }}
       >
@@ -186,7 +234,11 @@ export function ShotStopperPage() {
           open={monitoringDrawerOpen}
           onOpenChange={setMonitoringDrawerOpen}
           shotData={shotData}
-          shotHistory={shotHistory}
+          shotHistory={mergedShotHistoryForDrawer}
+          currentPressure={
+            shotData?.currentPressure ??
+            shotData?.pressureBar
+          }
           isBrewing={shotData?.brewing ?? false}
           onStartShot={() => handleStartShot(selectedProfileId || "")}
           onStopShot={handleStopShot}

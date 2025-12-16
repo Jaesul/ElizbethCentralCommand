@@ -2,6 +2,8 @@
 
 import * as React from "react"
 import { Area, AreaChart, CartesianGrid, Line, XAxis, YAxis } from "recharts"
+import { Button } from "~/components/ui/button"
+import { Download } from "lucide-react"
 
 import {
   Card,
@@ -23,12 +25,14 @@ export interface ShotDataPoint {
   time: number; // seconds
   weight: number; // grams
   flowRate?: number; // g/s
+  pressure?: number; // bar
 }
 
 interface ShotChartProps {
   dataPoints: ShotDataPoint[];
   isBrewing: boolean;
   goalWeight?: number;
+  onExportCSV?: () => void;
 }
 
 const chartConfig = {
@@ -40,39 +44,93 @@ const chartConfig = {
     label: "Flow Rate",
     color: "var(--chart-2)",
   },
+  pressure: {
+    label: "Pressure",
+    color: "var(--chart-3)",
+  },
   goalWeight: {
     label: "Target Weight",
     color: "var(--chart-4)", // Distinct color for target line
   },
 } satisfies ChartConfig
 
-export function ShotChart({ dataPoints, isBrewing, goalWeight }: ShotChartProps) {
+// Export shot data to CSV
+function exportShotDataToCSV(dataPoints: ShotDataPoint[]) {
+  if (dataPoints.length === 0) return;
+
+  const headers = ["Time (s)", "Weight (g)", "Flow Rate (g/s)", "Pressure (bar)"];
+  const rows = dataPoints.map((point) => [
+    point.time.toFixed(3),
+    point.weight.toFixed(2),
+    point.flowRate !== undefined ? point.flowRate.toFixed(3) : "",
+    point.pressure !== undefined ? point.pressure.toFixed(2) : "",
+  ]);
+
+  const csvContent = [
+    headers.join(","),
+    ...rows.map((row) => row.join(",")),
+  ].join("\n");
+
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  link.setAttribute("href", url);
+  const timestamp = new Date().toISOString().split("T")[0];
+  link.setAttribute("download", `shot-data-${timestamp}.csv`);
+  link.style.visibility = "hidden";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+export function ShotChart({ dataPoints, isBrewing, goalWeight, onExportCSV }: ShotChartProps) {
   // Maintain EMA state and buffer for flow rate calculation
   const flowRateStateRef = React.useRef<{
     flowEMA: number;
     weights: number[];
     times: number[];
     flowRates: (number | undefined)[]; // Store all calculated flow rates
+    pressureEMA: number; // EMA for pressure smoothing
+    smoothedPressures: (number | undefined)[]; // Store all smoothed pressure values
   }>({
     flowEMA: 0,
     weights: [],
     times: [],
     flowRates: [],
+    pressureEMA: 0,
+    smoothedPressures: [],
   });
+
+  const handleExportCSV = React.useCallback(() => {
+    if (onExportCSV) {
+      onExportCSV();
+    } else {
+      exportShotDataToCSV(dataPoints);
+    }
+  }, [dataPoints, onExportCSV]);
 
   // Calculate flow rate for each data point and prepare chart data
   const chartData = React.useMemo(() => {
     if (dataPoints.length === 0) {
       // Reset state when no data
-      flowRateStateRef.current = { flowEMA: 0, weights: [], times: [], flowRates: [] };
+      flowRateStateRef.current = { 
+        flowEMA: 0, 
+        weights: [], 
+        times: [], 
+        flowRates: [],
+        pressureEMA: 0,
+        smoothedPressures: [],
+      };
       return [];
     }
 
     // Configuration from FlowCald.ts - optimized for drip accounting
     const WINDOW_MS = 800; // 500ms window - larger than typical drip interval (400-600ms)
-    const ALPHA = 0.2; // EMA smoothing factor - decent responsiveness
+    const ALPHA = 0.1; // EMA smoothing factor - increased smoothing (lower = more smoothing)
     const DEADBAND_GRAMS = 0.03; // Ignore tiny weight changes below this threshold (noise)
     const HISTORY_MS = 2500; // Keep ~2.5s of samples
+    const PRESSURE_ALPHA = 0.15; // EMA smoothing factor for pressure (lower = more smoothing)
 
     const state = flowRateStateRef.current;
 
@@ -82,6 +140,8 @@ export function ShotChart({ dataPoints, isBrewing, goalWeight }: ShotChartProps)
       state.weights = [];
       state.times = [];
       state.flowRates = [];
+      state.pressureEMA = 0;
+      state.smoothedPressures = [];
     }
 
     // Only process new points (incremental like FlowRateCalculator)
@@ -170,17 +230,39 @@ export function ShotChart({ dataPoints, isBrewing, goalWeight }: ShotChartProps)
 
       // Store flow rate for this point
       state.flowRates.push(flowRate);
+      
+      // Apply EMA smoothing to pressure
+      let smoothedPressure: number | undefined;
+      if (point.pressure !== undefined) {
+        // Initialize EMA with first pressure value
+        if (state.pressureEMA === 0 && state.smoothedPressures.length === 0) {
+          state.pressureEMA = point.pressure;
+        } else {
+          // Apply EMA smoothing
+          state.pressureEMA = PRESSURE_ALPHA * point.pressure + (1 - PRESSURE_ALPHA) * state.pressureEMA;
+        }
+        smoothedPressure = state.pressureEMA;
+      } else if (state.smoothedPressures.length > 0) {
+        // If no pressure value, use last smoothed value (maintain continuity)
+        smoothedPressure = state.pressureEMA;
+      }
+      
+      // Store smoothed pressure for this point
+      state.smoothedPressures.push(smoothedPressure);
     }
 
     // Build chart data with all points (including previously processed ones)
     return dataPoints.map((point, index) => {
       // Use stored flow rate for this point
       const flowRate = state.flowRates[index];
+      // Use smoothed pressure for this point
+      const smoothedPressure = state.smoothedPressures[index];
 
       return {
         time: Number(point.time.toFixed(2)),
         weight: Number(point.weight.toFixed(1)),
-        flowRate: flowRate !== undefined ? Number(flowRate.toFixed(2)) : undefined,
+        flowRate: flowRate !== undefined ? Number(flowRate.toFixed(2)) : 0, // Default to 0 if undefined
+        pressure: smoothedPressure !== undefined ? Number(smoothedPressure.toFixed(2)) : undefined,
         goalWeight: goalWeight,
       };
     });
@@ -206,6 +288,17 @@ export function ShotChart({ dataPoints, isBrewing, goalWeight }: ShotChartProps)
             {isBrewing ? "Live shot visualization" : "Completed shot profile"} ({chartData.length} data points)
           </CardDescription>
         </div>
+        {chartData.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportCSV}
+            className="flex items-center gap-2"
+          >
+            <Download className="h-4 w-4" />
+            Export CSV
+          </Button>
+        )}
       </CardHeader>
       <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
         <ChartContainer
@@ -238,6 +331,18 @@ export function ShotChart({ dataPoints, isBrewing, goalWeight }: ShotChartProps)
                   stopOpacity={0.1}
                 />
               </linearGradient>
+              <linearGradient id="fillPressure" x1="0" y1="0" x2="0" y2="1">
+                <stop
+                  offset="5%"
+                  stopColor="var(--color-pressure)"
+                  stopOpacity={0.8}
+                />
+                <stop
+                  offset="95%"
+                  stopColor="var(--color-pressure)"
+                  stopOpacity={0.1}
+                />
+              </linearGradient>
             </defs>
             <CartesianGrid vertical={false} />
             <XAxis
@@ -247,12 +352,15 @@ export function ShotChart({ dataPoints, isBrewing, goalWeight }: ShotChartProps)
               tickMargin={8}
               minTickGap={32}
               tickFormatter={(value) => `${value}s`}
+              domain={[0, 35]}
+              type="number"
             />
             <YAxis
               yAxisId="left"
               tickLine={false}
               axisLine={false}
               tickMargin={8}
+              label={{ value: "Weight (g)", angle: -90, position: "insideLeft" }}
             />
             <YAxis
               yAxisId="right"
@@ -260,6 +368,15 @@ export function ShotChart({ dataPoints, isBrewing, goalWeight }: ShotChartProps)
               tickLine={false}
               axisLine={false}
               tickMargin={8}
+              label={{ value: "Flow Rate (g/s)", angle: 90, position: "insideRight" }}
+            />
+            <YAxis
+              yAxisId="pressure"
+              orientation="right"
+              tickLine={false}
+              axisLine={false}
+              tickMargin={8}
+              label={{ value: "Pressure (bar)", angle: 90, position: "insideRight" }}
             />
             <ChartTooltip
               cursor={false}
@@ -273,21 +390,31 @@ export function ShotChart({ dataPoints, isBrewing, goalWeight }: ShotChartProps)
             <Area
               yAxisId="left"
               dataKey="weight"
-              type="natural"
+              type="monotone"
               fill="url(#fillWeight)"
               stroke="var(--color-weight)"
             />
             <Area
               yAxisId="right"
               dataKey="flowRate"
-              type="natural"
+              type="monotone"
               fill="url(#fillFlowRate)"
               stroke="var(--color-flowRate)"
+            />
+            <Area
+              yAxisId="pressure"
+              dataKey="pressure"
+              type="monotone"
+              stroke="var(--color-pressure)"
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4 }}
+              connectNulls={false}
             />
             {goalWeight && (
               <Line
                 yAxisId="left"
-                type="natural"
+                type="monotone"
                 dataKey="goalWeight"
                 stroke="var(--color-goalWeight)"
                 strokeDasharray="5 5"

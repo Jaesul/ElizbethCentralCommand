@@ -17,6 +17,7 @@ interface ShotMonitoringDrawerProps {
   onOpenChange: (open: boolean) => void;
   shotData: ShotStopperData | null;
   shotHistory: ShotDataPoint[];
+  currentPressure?: number;
   isBrewing: boolean;
   onStartShot: () => void;
   onStopShot: () => void;
@@ -28,6 +29,7 @@ export function ShotMonitoringDrawer({
   onOpenChange,
   shotData,
   shotHistory,
+  currentPressure,
   isBrewing,
   onStartShot,
   onStopShot,
@@ -56,8 +58,8 @@ export function ShotMonitoringDrawer({
           />
         </div>
 
-        {/* Current Weight and Timer Display */}
-        <div className="grid grid-cols-2 gap-4">
+        {/* Current Weight, Timer, and Pressure Display */}
+        <div className="grid grid-cols-3 gap-4">
           <div className="text-center p-2 bg-muted/50 rounded-lg">
             <div className="text-xs text-muted-foreground mb-1">Current Weight</div>
             <div className="text-lg font-bold">
@@ -70,6 +72,17 @@ export function ShotMonitoringDrawer({
             <div className="text-lg font-bold">
               {formatNumber(shotData?.shotTimer)}{" "}
               <span className="text-sm text-muted-foreground">s</span>
+            </div>
+          </div>
+          <div className="text-center p-2 bg-muted/50 rounded-lg">
+            <div className="text-xs text-muted-foreground mb-1">Pressure</div>
+            <div className="text-lg font-bold">
+              {currentPressure !== undefined
+                ? formatNumber(currentPressure, 2)
+                : shotData?.currentPressure !== undefined || shotData?.pressureBar !== undefined
+                  ? formatNumber(shotData.currentPressure ?? shotData.pressureBar, 2)
+                  : "--"}{" "}
+              <span className="text-sm text-muted-foreground">bar</span>
             </div>
           </div>
         </div>

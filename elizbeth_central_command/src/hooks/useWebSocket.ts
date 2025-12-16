@@ -33,6 +33,12 @@ export function useWebSocket({
   const isConnectingRef = useRef(false);
 
   const connect = useCallback(() => {
+    // Don't connect if URL is empty
+    if (!url || url.trim() === "") {
+      isConnectingRef.current = false;
+      return;
+    }
+
     // Prevent multiple connection attempts
     if (isConnectingRef.current || (wsRef.current && wsRef.current.readyState === WebSocket.OPEN)) {
       return;
@@ -79,6 +85,14 @@ export function useWebSocket({
             expectedEndTime?: number;
             endType?: EndType;
             datapoints?: number;
+            currentPressure?: number;
+            pressurePSI?: number;
+            pressureBar?: number;
+            serialLog?: string;
+            adcValue?: number;
+            adcVoltage?: number;
+            sensorVoltage?: number;
+            pressureMPA?: number;
           };
           
           // Map ESP32 data to ShotStopperData format
@@ -102,6 +116,9 @@ export function useWebSocket({
             endType: espData.endType,
             datapoints: espData.datapoints,
             timestamp: timestamp,
+            currentPressure: espData.currentPressure ?? espData.pressureBar ?? undefined,
+            pressurePSI: espData.pressurePSI ?? undefined,
+            pressureBar: espData.pressureBar ?? espData.currentPressure ?? undefined,
           };
 
           setData(shotData);

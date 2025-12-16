@@ -10,5 +10,8 @@ export interface ShotStopperData {
   endType?: EndType;
   datapoints?: number;
   timestamp?: string;
+  currentPressure?: number;
+  pressurePSI?: number;
+  pressureBar?: number;
 }
 
