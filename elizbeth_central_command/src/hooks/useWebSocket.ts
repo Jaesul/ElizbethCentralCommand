@@ -85,6 +85,7 @@ export function useWebSocket({
             expectedEndTime?: number;
             endType?: EndType;
             datapoints?: number;
+            pumpPowerPct?: number;
             currentPressure?: number;
             pressurePSI?: number;
             pressureBar?: number;
@@ -119,6 +120,7 @@ export function useWebSocket({
             currentPressure: espData.currentPressure ?? espData.pressureBar ?? undefined,
             pressurePSI: espData.pressurePSI ?? undefined,
             pressureBar: espData.pressureBar ?? espData.currentPressure ?? undefined,
+            pumpPowerPct: espData.pumpPowerPct ?? undefined,
           };
 
           setData(shotData);

@@ -34,9 +34,66 @@
 #include <WebSocketsServer.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
+#include "driver/gpio.h"
+
+// Arduino auto-generates function prototypes at the top of the sketch.
+// Forward-declare types used in function signatures so those prototypes compile.
+struct Shot;
 
 #define OUT_PIN 19  // Output pin for 12V optocoupler
 #define PRESSURE_PIN 4  // GPIO 4 - ADC1_CH3 (analog input for pressure transducer) - matches PressureReader.ino
+
+// ================== TRIAC (sanity check: force full power) ==================
+// Goal: keep triac gate firing at 100% so the machine can drive the pump normally and we can
+// sanity-check pressure readings while the dimmer is in the circuit.
+//
+// RobotDyn dimmer module wiring:
+// - ZC  -> GPIO 14
+// - DIM -> GPIO 17
+//
+// This does NOT start the pump by itself; it only ensures full conduction when the machine powers the pump.
+#define TRIAC_ZC_PIN 14
+#define TRIAC_DIM_PIN 17
+
+static constexpr uint32_t TRIAC_HALF_CYCLE_US = 8333;                 // 60 Hz half-cycle
+static constexpr uint32_t TRIAC_HOLD_US = TRIAC_HALF_CYCLE_US - 300;  // hold gate to latch
+static constexpr uint8_t  TRIAC_BUCKET_SIZE = 20;                     // burst-fire resolution
+
+volatile uint32_t triacZcCount = 0;
+volatile uint32_t triacFireCount = 0;
+volatile uint8_t  triacBucketIdx = 0;
+volatile uint8_t  pumpPowerPct = 100; // default full power; can be overridden via WebSocket setPower
+
+hw_timer_t* triacOffTimer = nullptr;
+
+static inline uint8_t triacFireCyclesFor(uint8_t pct) {
+  if (pct >= 100) return TRIAC_BUCKET_SIZE;
+  return (uint16_t)pct * TRIAC_BUCKET_SIZE / 100;
+}
+
+void IRAM_ATTR triacOffTimerISR() {
+  gpio_set_level((gpio_num_t)TRIAC_DIM_PIN, 0);
+  timerStop(triacOffTimer);
+}
+
+void IRAM_ATTR triacZeroCrossISR() {
+  triacZcCount++;
+
+  triacBucketIdx++;
+  if (triacBucketIdx >= TRIAC_BUCKET_SIZE) triacBucketIdx = 0;
+
+  const uint8_t fireCycles = triacFireCyclesFor(pumpPowerPct);
+  if (fireCycles == 0) return;
+  if (triacBucketIdx >= fireCycles) return;
+
+  gpio_set_level((gpio_num_t)TRIAC_DIM_PIN, 1);
+
+  timerWrite(triacOffTimer, 0);
+  timerAlarm(triacOffTimer, TRIAC_HOLD_US, false, 0);
+  timerStart(triacOffTimer);
+
+  triacFireCount++;
+}
 
 #define MAX_OFFSET 5                // In case an error in brewing occurred
 #define MIN_SHOT_DURATION_S 3       // Useful for flushing the group
@@ -110,6 +167,7 @@ int currentAdcValue = 0;
 float currentAdcVoltage = 0.0;
 float currentSensorVoltage = 0.0;
 unsigned long lastPressureRead_ms = 0;
+unsigned long lastPressureSerial_ms = 0;
 
 // Filtering state variables
 float filteredPressureBar_display = 0.0;  // Filtered pressure for display/logging
@@ -157,11 +215,13 @@ void monitorHeap(){
   size_t used = heapSize - freeHeap;
   uint8_t usedPercent = (heapSize > 0) ? (used * 100) / heapSize : 0;
 
-  Serial.printf("Heap usage: %u / %u bytes (%u%%)\n", (unsigned)used, (unsigned)heapSize, usedPercent);
-
+  // Only log heap usage if above warning threshold
   if(usedPercent >= 80){
-    Serial.println("Heap above 80% - clearing shot buffer");
-    clearShotBuffer();
+    Serial.printf("[WARNING] Heap usage: %u / %u bytes (%u%%)\n", (unsigned)used, (unsigned)heapSize, usedPercent);
+    if(shot.brewing){
+      Serial.println("[WARNING] Heap above 80% - clearing shot buffer");
+      clearShotBuffer();
+    }
   }
 }
 
@@ -248,20 +308,16 @@ void readPressure() {
   currentAdcVoltage = adcVoltage;
   currentSensorVoltage = sensorVoltage;
   
-  // Print readings to Serial (for debugging) - show both raw and filtered
-  Serial.print("ADC: ");
-  Serial.print(adcValue);
-  Serial.print(" | ADC Voltage: ");
-  Serial.print(adcVoltage, 3);
-  Serial.print("V | Sensor Voltage: ");
-  Serial.print(sensorVoltage, 3);
-  Serial.print("V | Raw: ");
-  Serial.print(pressureBar_raw, 2);
-  Serial.print(" bar | Filtered: ");
-  Serial.print(currentPressureBar, 2);
-  Serial.print(" bar (");
-  Serial.print(currentPressurePSI, 1);
-  Serial.println(" PSI)");
+  // Serial debug: log voltages at ESP pin and at sensor (after divider correction)
+  // Throttle to avoid flooding the serial monitor.
+  if (millis() - lastPressureSerial_ms >= 200) { // 5 Hz
+    lastPressureSerial_ms = millis();
+    Serial.printf("[PRESSURE_V] ADC:%d | ADC_V:%.3fV | SENSOR_V:%.3fV | P:%.2f bar\n",
+                  adcValue,
+                  adcVoltage,
+                  sensorVoltage,
+                  currentPressureBar);
+  }
 }
 
 void setup() {
@@ -286,6 +342,19 @@ void setup() {
 
   pinMode(OUT_PIN, OUTPUT);
   digitalWrite(OUT_PIN, LOW);  // Start with optocoupler off
+
+  // Triac control init (forced 100% power)
+  gpio_reset_pin((gpio_num_t)TRIAC_DIM_PIN);
+  gpio_set_direction((gpio_num_t)TRIAC_DIM_PIN, GPIO_MODE_OUTPUT);
+  gpio_set_level((gpio_num_t)TRIAC_DIM_PIN, 0);
+  pinMode(TRIAC_ZC_PIN, INPUT_PULLUP);
+
+  triacOffTimer = timerBegin(1000000); // 1 MHz = 1 µs ticks
+  timerAttachInterrupt(triacOffTimer, &triacOffTimerISR);
+  timerStop(triacOffTimer);
+  attachInterrupt(digitalPinToInterrupt(TRIAC_ZC_PIN), triacZeroCrossISR, RISING);
+
+  Serial.println("[TRIAC] Enabled on GPIO14(ZC) / GPIO17(DIM), forcing 100% power (sanity check).");
 
   // Initialize WiFi, mDNS, and WebSocket server if enabled
   if(WEBSOCKET_ENABLED){
@@ -327,13 +396,6 @@ void setup() {
 }
 
 void loop() {
-  
-  static unsigned long lastHeartbeat_ms = 0;
-  if(millis() - lastHeartbeat_ms > 500){
-    Serial.println("loop heartbeat");
-    lastHeartbeat_ms = millis();
-  }
-
   if(!scale.isConnected()){
     Serial.println("Scale lost!");
     Serial.println("Scanning...");
@@ -371,6 +433,7 @@ void loop() {
   BLE.poll();
   if (weightCharacteristic.written()) {
     goalWeight = weightCharacteristic.value();
+    Serial.print("[Config] Goal weight updated to: ");
     Serial.println(goalWeight);
     EEPROM.write(WEIGHT_ADDR, goalWeight);
     EEPROM.commit();
@@ -460,14 +523,21 @@ void loop() {
   && shot.shotTimer >  MIN_SHOT_DURATION_S
   && (millis() - lastOptocouplerPulse_ms > 700)  // Additional debounce: prevent rapid re-triggering
   ){
-    Serial.println("weight achieved");
+    Serial.print("[TRIGGER] Weight achieved - stopping shot at ");
+    Serial.print(shot.shotTimer, 1);
+    Serial.print("s, weight: ");
+    Serial.print(currentWeight, 1);
+    Serial.println("g");
+    
     shot.brewing = false;
     shot.end = ENDTYPE::WEIGHT;
     
     // Toggle optocoupler to stop shot (pulse) - with debounce protection
+    Serial.println("[TRIGGER] Optocoupler pulse: HIGH");
     digitalWrite(OUT_PIN, HIGH);
     delay(250);  // Button press simulation duration
     digitalWrite(OUT_PIN, LOW);
+    Serial.println("[TRIGGER] Optocoupler pulse: LOW");
     yield();
     lastOptocouplerPulse_ms = millis();
     
@@ -515,13 +585,15 @@ void startShot() {
     return;
   }
   
-  Serial.println("[WebSocket] Starting shot via command");
+  Serial.println("[TRIGGER] Starting shot via WebSocket command");
   
   // Trigger optocoupler to start the shot (simulate button press)
   if(millis() - lastOptocouplerPulse_ms > 700) {  // Debounce: only pulse once per 700ms
+    Serial.println("[TRIGGER] Optocoupler pulse: HIGH");
     digitalWrite(OUT_PIN, HIGH);
     delay(250);  // Button press simulation duration
     digitalWrite(OUT_PIN, LOW);
+    Serial.println("[TRIGGER] Optocoupler pulse: LOW");
     yield();
     lastOptocouplerPulse_ms = millis();
   }
@@ -538,13 +610,15 @@ void stopShot() {
     return;
   }
   
-  Serial.println("[WebSocket] Stopping shot via command");
+  Serial.println("[TRIGGER] Stopping shot via WebSocket command");
   
   // Trigger optocoupler to stop the shot (simulate button press)
   if(millis() - lastOptocouplerPulse_ms > 700) {  // Debounce: only pulse once per 700ms
+    Serial.println("[TRIGGER] Optocoupler pulse: HIGH");
     digitalWrite(OUT_PIN, HIGH);
     delay(250);  // Button press simulation duration
     digitalWrite(OUT_PIN, LOW);
+    Serial.println("[TRIGGER] Optocoupler pulse: LOW");
     yield();
     lastOptocouplerPulse_ms = millis();
   }
@@ -756,6 +830,29 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
           serializeJson(response, responseStr);
           webSocket.sendTXT(num, responseStr);
         }
+        // Handle setPower command (manual triac power % override)
+        else if (doc.containsKey("command") && strcmp(doc["command"], "setPower") == 0) {
+          StaticJsonDocument<192> response;
+          response["command"] = "setPower";
+
+          if (doc.containsKey("powerPct")) {
+            int p = doc["powerPct"];
+            if (p < 0) p = 0;
+            if (p > 100) p = 100;
+            pumpPowerPct = (uint8_t)p;
+            Serial.printf("[WebSocket] Pump power set to %u%%\n", (unsigned)pumpPowerPct);
+
+            response["success"] = true;
+            response["powerPct"] = pumpPowerPct;
+          } else {
+            response["success"] = false;
+            response["error"] = "Missing powerPct";
+          }
+
+          String responseStr;
+          serializeJson(response, responseStr);
+          webSocket.sendTXT(num, responseStr);
+        }
       }
       break;
     case WStype_ERROR:
@@ -860,6 +957,9 @@ void sendShotData() {
   
   // Add datapoints
   doc["datapoints"] = shot.datapoints;
+
+  // Add current triac power (for UI debugging / flow profiling comparisons)
+  doc["pumpPowerPct"] = pumpPowerPct;
   
   // Add pressure data
   doc["currentPressure"] = currentPressureBar;

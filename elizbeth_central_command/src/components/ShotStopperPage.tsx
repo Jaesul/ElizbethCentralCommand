@@ -7,6 +7,7 @@ import { ShotMonitoringDrawer } from "~/components/ShotMonitoringDrawer";
 import { Drawer } from "~/components/ui/drawer";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Badge } from "~/components/ui/badge";
+import { Slider } from "~/components/ui/slider";
 import { useWebSocket } from "~/hooks/useWebSocket";
 import { useShotHistory } from "~/hooks/useShotHistory";
 import { useProfiles } from "~/hooks/useProfiles";
@@ -111,6 +112,19 @@ export function ShotStopperPage() {
   const error = isTestingMode ? undefined : (wsError || pressureWsError);
   const lastMessageTime = isTestingMode ? Date.now().toString() : wsLastMessageTime;
 
+  // Manual triac power control (for flow profiling comparisons)
+  const [pumpPowerPct, setPumpPowerPct] = useState(100);
+  const [isPowerSliding, setIsPowerSliding] = useState(false);
+
+  useEffect(() => {
+    if (isTestingMode) return;
+    if (isPowerSliding) return;
+    const v = wsData?.pumpPowerPct;
+    if (typeof v === "number" && Number.isFinite(v)) {
+      setPumpPowerPct(Math.max(0, Math.min(100, Math.round(v))));
+    }
+  }, [wsData?.pumpPowerPct, isTestingMode, isPowerSliding]);
+
   // Handle sendMessage - disable in testing mode or make it control mock data
   const sendMessage = isTestingMode 
     ? (message: object) => {
@@ -124,6 +138,13 @@ export function ShotStopperPage() {
         }
       }
     : wsSendMessage;
+
+  const sendPumpPower = (value: number) => {
+    if (isTestingMode) return;
+    if (!wsConnected) return; // must go to main device, not the pressure-only socket
+    const p = Math.max(0, Math.min(100, Math.round(value)));
+    wsSendMessage({ command: "setPower", powerPct: p });
+  };
 
   const { shotHistory, isActiveShot } = useShotHistory(shotData);
   const {
@@ -197,6 +218,42 @@ export function ShotStopperPage() {
           )}
         </div>
       </div>
+
+      {/* Manual pump power control (triac %). Sends setPower to ESP32 on release. */}
+      {!isTestingMode && (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>Manual Pump Power</span>
+              <Badge variant={wsConnected ? "default" : "secondary"}>
+                {wsConnected ? `${pumpPowerPct}%` : "Not connected"}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Slider
+              value={[pumpPowerPct]}
+              min={0}
+              max={100}
+              step={1}
+              disabled={!wsConnected}
+              onValueChange={(v) => {
+                setIsPowerSliding(true);
+                setPumpPowerPct(v[0] ?? 0);
+              }}
+              onValueCommit={(v) => {
+                setIsPowerSliding(false);
+                const val = v[0] ?? 0;
+                setPumpPowerPct(val);
+                sendPumpPower(val);
+              }}
+            />
+            <div className="text-xs text-muted-foreground">
+              This sends <code>setPower</code> to the ESP32. (ShotStopper firmware must support triac power control.)
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
 
       {/* Profile Selector - Front and center */}

@@ -13,5 +13,6 @@ export interface ShotStopperData {
   currentPressure?: number;
   pressurePSI?: number;
   pressureBar?: number;
+  pumpPowerPct?: number;
 }
 

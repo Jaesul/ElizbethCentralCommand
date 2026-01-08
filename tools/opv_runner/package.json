@@ -1,0 +1,16 @@
+{
+  "name": "opv-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "scripts": {
+    "run": "node opv_runner.mjs",
+    "analyze": "node opv_analyze.mjs"
+  }
+}
+
+
+
