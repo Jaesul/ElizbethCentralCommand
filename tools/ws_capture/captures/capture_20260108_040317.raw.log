@@ -1,0 +1,67 @@
+[PROFILE] Starting profiling sequence...
+[PROFILE] Press button to start first test at 30%
+[PROFILE] Recording started at 10% power (21946 ms)
+[PROFILE] Recording ended at 10% power (33946 ms)
+33946,10,0.573,0.467,60,52,0.867
+[PROFILE] Next power level: 15%
+[PROFILE] Recording started at 15% power (36947 ms)
+[PROFILE] Recording ended at 15% power (48947 ms)
+48947,15,2.094,1.528,60,60,1.000
+[PROFILE] Next power level: 20%
+[PROFILE] Recording started at 20% power (51948 ms)
+[PROFILE] Recording ended at 20% power (63948 ms)
+63948,20,3.808,1.878,60,60,1.000
+[PROFILE] Next power level: 25%
+[PROFILE] Recording started at 25% power (66949 ms)
+[PROFILE] Recording ended at 25% power (78949 ms)
+78949,25,5.020,2.113,60,60,1.000
+[PROFILE] Next power level: 30%
+[PROFILE] Recording started at 30% power (81950 ms)
+[PROFILE] Recording ended at 30% power (93950 ms)
+93950,30,5.991,0.942,60,60,1.000
+[PROFILE] Next power level: 35%
+[PROFILE] Recording started at 35% power (96951 ms)
+[PROFILE] Recording ended at 35% power (108951 ms)
+108951,35,6.945,1.324,60,60,1.000
+[PROFILE] Next power level: 40%
+[PROFILE] Recording started at 40% power (111952 ms)
+[PROFILE] Recording ended at 40% power (123952 ms)
+123952,40,7.214,1.256,60,60,1.000
+[PROFILE] Next power level: 45%
+[PROFILE] Recording started at 45% power (126953 ms)
+[PROFILE] Recording ended at 45% power (138953 ms)
+138953,45,7.375,0.918,60,60,1.000
+[PROFILE] Next power level: 50%
+[PROFILE] Recording started at 50% power (141954 ms)
+[PROFILE] Recording ended at 50% power (153954 ms)
+153954,50,7.879,0.769,60,60,1.000
+[PROFILE] Next power level: 55%
+[PROFILE] Recording started at 55% power (156955 ms)
+[PROFILE] Recording ended at 55% power (168955 ms)
+168955,55,7.948,1.056,60,60,1.000
+[PROFILE] Next power level: 60%
+[PROFILE] Recording started at 60% power (171956 ms)
+[PROFILE] Recording ended at 60% power (183956 ms)
+183956,60,8.700,1.239,60,60,1.000
+[PROFILE] Next power level: 65%
+[PROFILE] Recording started at 65% power (186957 ms)
+[PROFILE] Recording ended at 65% power (198957 ms)
+198957,65,7.728,0.997,60,60,1.000
+[PROFILE] Next power level: 70%
+[PROFILE] Recording started at 70% power (201958 ms)
+[PROFILE] Recording ended at 70% power (213958 ms)
+213958,70,7.952,0.712,60,60,1.000
+[PROFILE] Next power level: 75%
+[PROFILE] Recording started at 75% power (216959 ms)
+[PROFILE] Recording ended at 75% power (228959 ms)
+228959,75,7.479,0.444,60,60,1.000
+[PROFILE] Next power level: 80%
+[PROFILE] Recording started at 80% power (231960 ms)
+[PROFILE] Recording ended at 80% power (243960 ms)
+243960,80,8.515,1.203,60,60,1.000
+[PROFILE] Next power level: 85%
+[PROFILE] Recording started at 85% power (246961 ms)
+[PROFILE] Recording ended at 85% power (258961 ms)
+258961,85,7.927,0.572,60,60,1.000
+[PROFILE] Next power level: 90%
+[PROFILE] Recording started at 90% power (261962 ms)

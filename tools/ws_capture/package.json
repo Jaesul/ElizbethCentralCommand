@@ -7,7 +7,8 @@
     "ws": "^8.18.3"
   },
   "scripts": {
-    "capture": "node ws_capture.mjs"
+    "capture": "node ws_capture.mjs",
+    "calibrate:freeflow": "node freeflow_calibrate.mjs"
   }
 }
 

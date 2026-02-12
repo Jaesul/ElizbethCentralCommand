@@ -24,6 +24,7 @@ function inferHeaderFromRow(line) {
   const n = parts.length;
   if (n === 4) return "time_ms,power_pct,weight_g,flow_gps";
   if (n === 5) return "time_ms,power_pct,weight_g,flow_gps,pressure_bar";
+  if (n === 7) return "time_ms,power_pct,weight_g,flow_gps,pressure_bar,clicks_total,clicks_per_s";
   if (n === 8)
     return "t_ms,stage_idx,power_pct,pressure_bar,target_pressure_bar,weight_g,flow_gps,resistance_bar_per_gps";
   return null;
@@ -35,7 +36,8 @@ function ensureDir(p) {
 
 function parseArgs(argv) {
   const args = {
-    url: "ws://shotstopper-ws.local:81/ws",
+    // Arduino WebSocketsServer typically serves on the root path (no /ws).
+    url: "ws://shotstopper-ws.local:81",
     out: "",
     raw: "",
     name: "",
@@ -72,10 +74,10 @@ function usage() {
       "ws_capture.mjs - WebSocket capture + command sender (no Serial)",
       "",
       "Usage:",
-      "  node ws_capture.mjs --url ws://<esp-ip>:81/ --name run1",
+      "  node ws_capture.mjs --url ws://<esp-ip>:81 --name run1",
       "",
       "Options:",
-      "  --url <wsUrl>     WebSocket URL (default: ws://autopump-profiler.local:81/)",
+      "  --url <wsUrl>     WebSocket URL (default: ws://shotstopper-ws.local:81)",
       "  --name <name>     Base filename (default: timestamped)",
       "  --out <csvPath>   Output CSV path (default: captures/<name>.csv)",
       "  --raw <rawPath>   Raw log path (default: captures/<name>.raw.log)",
@@ -109,10 +111,87 @@ const csvStream = fs.createWriteStream(outCsv, { flags: "w" });
 const rawStream = fs.createWriteStream(outRaw, { flags: "w" });
 
 let headerSeen = false;
+let shotActive = false;
+
+function tryParseJsonLine(line) {
+  const s = line.trim();
+  if (!s.startsWith("{")) return null;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+function formatNum(x, digits = 2) {
+  if (x === null || x === undefined) return "";
+  const n = Number(x);
+  if (!Number.isFinite(n)) return "";
+  return n.toFixed(digits);
+}
 
 function handleLine(line) {
   // Always raw capture
   rawStream.write(line + "\n");
+
+  // If the device is sending JSON telemetry, only print once the shot is started.
+  const msg = tryParseJsonLine(line);
+  if (msg && typeof msg === "object") {
+    const action = msg.action;
+    const data = msg.data ?? {};
+
+    if (action === "log_record") {
+      // Always show logs so you can see whether GO actually triggered.
+      const src = data.source ?? "device";
+      const log = data.log ?? "";
+      process.stdout.write(`[log:${src}] ${log}\n`);
+      if (String(log).includes("[shot] GO")) shotActive = true;
+      if (String(log).includes("[shot] STOP")) shotActive = false;
+      return;
+    }
+
+    if (action === "sensor_data_update") {
+      if (typeof data.brewActive === "boolean") shotActive = data.brewActive;
+      // Suppress sensor spam by default; keep raw capture above.
+      return;
+    }
+
+    if (action === "shot_data_update") {
+      shotActive = true;
+      if (!shotActive) return;
+      // Compact single-line shot telemetry
+      const t = formatNum(data.timeInShot, 0);
+      const pt = data.profileTimeInShot !== undefined ? formatNum(data.profileTimeInShot, 0) : "";
+      const p = formatNum(data.pressure, 2);
+      const pf = formatNum(data.pumpFlow, 2);
+      const wf = formatNum(data.weightFlow, 2);
+      const w = formatNum(data.shotWeight, 2);
+      const tp = formatNum(data.targetPressure, 2);
+      const tf = formatNum(data.targetPumpFlow, 2);
+      const wp = formatNum(data.waterPumped, 1);
+      const phaseIdx = data.phaseIdx !== undefined ? String(data.phaseIdx) : "";
+      const phaseType = data.phaseType ? String(data.phaseType) : "";
+      const tip = data.timeInPhase !== undefined ? formatNum(data.timeInPhase, 0) : "";
+      const clicks = data.pumpClicks !== undefined ? String(data.pumpClicks) : "";
+      const cps = data.pumpCps !== undefined ? formatNum(data.pumpCps, 1) : "";
+      const power = data.pumpPowerPct !== undefined ? formatNum(data.pumpPowerPct, 1) : "";
+      process.stdout.write(
+        `t_ms=${t}${pt ? ` profile_ms=${pt}` : ""} p=${p}bar pumpFlow=${pf}ml/s weight=${w}g weightFlow=${wf}g/s targetP=${tp}bar targetF=${tf}ml/s waterPumped=${wp}ml` +
+          `${phaseIdx !== "" ? ` phase=${phaseIdx}` : ""}${phaseType ? `(${phaseType})` : ""}${tip ? ` tInPhase=${tip}` : ""}` +
+          `${clicks !== "" ? ` clicks=${clicks}` : ""}${cps ? ` cps=${cps}` : ""}${power ? ` power=${power}%` : ""}\n`,
+      );
+      return;
+    }
+
+    // Unknown JSON action: ignore (raw capture still includes it)
+    return;
+  }
+
+  // Plain-text STATUS replies (the ESP sends these as text, not JSON)
+  if (/^\s*\[status\]/i.test(line.trim())) {
+    process.stdout.write(line.trim() + "\n");
+    return;
+  }
 
   // Clean CSV capture
   if (isCsvHeader(line)) {
@@ -156,7 +235,6 @@ ws.on("message", (data) => {
   // Some servers send multiple lines; split safely
   for (const ln of text.split(/\r?\n/)) {
     if (!ln) continue;
-    process.stdout.write(ln + "\n");
     handleLine(ln);
   }
 });

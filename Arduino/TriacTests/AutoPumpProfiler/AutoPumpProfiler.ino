@@ -1,3 +1,4 @@
+
 /*
   AutoPumpProfiler.ino - Automated Pump Profiling System
   
@@ -21,6 +22,7 @@
 
 #include <Arduino.h>
 #include "driver/gpio.h"
+#include <PSM.h>
 #include <AcaiaArduinoBLE.h>
 #include <WiFi.h>
 #include <WebSocketsServer.h>
@@ -36,7 +38,7 @@
 // ================== CONFIG ==================
 static constexpr uint32_t HALF_CYCLE_US = 8333;      // 60 Hz
 static constexpr uint32_t HOLD_US = HALF_CYCLE_US - 300;
-static constexpr uint8_t  BUCKET_SIZE = 20;          // burst-fire resolution
+static constexpr uint8_t  BUCKET_SIZE = 20;          // burst-fire resolution (full cycles per bucket)
 
 // ================== WIFI / WEBSOCKET (match ShotStopperWithPressure) ==================
 // NOTE: If you're flashing this onto the SAME ESP32-S3 you run ShotStopper on,
@@ -51,16 +53,34 @@ static constexpr uint8_t  BUCKET_SIZE = 20;          // burst-fire resolution
 WebSocketsServer webSocket = WebSocketsServer(WS_SERVER_PORT);
 
 // Timing configuration
-static constexpr uint8_t  MIN_POWER_PCT = 30;
-static constexpr uint8_t  MAX_POWER_PCT = 100;
-static constexpr uint8_t  POWER_STEP_PCT = 10;
-static constexpr uint32_t RECORDING_DURATION_MS = 12000;  // 12 seconds
-static constexpr uint32_t PAUSE_DURATION_MS = 40000;      // 40 seconds
+// Use fixed-point power in 0.1% units so we can do 15% steps exactly.
+static constexpr uint16_t MIN_POWER_X10 = 250;   // 25.0%
+static constexpr uint16_t MAX_POWER_X10 = 1000;  // 100.0%
+static constexpr uint16_t POWER_STEP_X10 = 150;  // 15.0%
+static constexpr uint32_t RECORDING_DURATION_MS = 12000;  // per level
+static constexpr uint32_t PAUSE_DURATION_MS = 2000;       // between levels
 
-// Logging configuration
+// Streaming log configuration (matches previous captures)
 static constexpr uint32_t LOG_INTERVAL_MS = 100;     // 10 Hz logging
 static constexpr float    FLOW_ALPHA = 0.25;         // EMA smoothing
-static constexpr float    FLOW_DEADBAND_G = 0.03;
+static constexpr float    FLOW_DEADBAND_G = 0.03f;
+
+// Optional but recommended: read ADC at "quiet" times (avoid immediate post-triac switching noise)
+static constexpr uint32_t QUIET_AFTER_FIRE_US = 3000;        // delay until at least this many µs after a fire event
+
+// PSM.Library pump control (Gaggiuino uses this library on STM32).
+// We use the same API: pump.set(0..range), pump.getCounter(), pump.cps(), pump.setDivider(), pump.initTimer().
+static constexpr uint16_t PSM_RANGE = 100;
+PSM pump(ZC_PIN, DIM_PIN, PSM_RANGE, RISING, 1, 6);
+
+// Current power target in 0.1% units (0..1000). Declared here so helpers can use it.
+volatile uint16_t currentPower_x10 = 0;
+
+static inline void setPumpPowerX10(uint16_t pct_x10) {
+  currentPower_x10 = pct_x10;
+  const uint16_t v = (uint32_t)pct_x10 * (uint32_t)PSM_RANGE / 1000u;
+  pump.set(v);
+}
 
 // ================== PRESSURE (same conversion as PressureReader/PressureProfileController) ==================
 static constexpr uint32_t PRESSURE_READ_INTERVAL_MS = 50; // ~20 Hz
@@ -96,10 +116,23 @@ static float clampf(float x, float lo, float hi) {
   return x;
 }
 
+// Forward declaration: updated from onPSMInterrupt() hook.
+extern volatile uint32_t lastFireUs;
+
 void readPressure() {
   const uint32_t now = millis();
   if (now - lastPressureRead_ms < PRESSURE_READ_INTERVAL_MS) return;
   lastPressureRead_ms = now;
+
+  // Optional: avoid sampling immediately after a triac fire event (reduce switching noise/EMI)
+  if (QUIET_AFTER_FIRE_US > 0) {
+    const uint32_t nowUs = (uint32_t)micros();
+    const uint32_t lf = lastFireUs;
+    const uint32_t since = nowUs - lf; // uint32 wrap OK
+    if (since < QUIET_AFTER_FIRE_US) {
+      delayMicroseconds(QUIET_AFTER_FIRE_US - since);
+    }
+  }
 
   // Match ShotStopperWithPressure conversion (raw ADC -> assume 3.3V reference)
   const int adcValue = analogRead(PRESSURE_PIN);
@@ -152,12 +185,9 @@ void readPressure() {
 }
 
 // ================== TRIAC STATE ==================
-volatile uint32_t zcCount = 0;
-volatile uint32_t fireCount = 0;
-volatile uint8_t  bucketIdx = 0;
-volatile uint8_t  currentPowerPct = 0;
-
-hw_timer_t* offTimer = nullptr;
+// lastFireUs is used only to schedule ADC reads away from switching noise.
+// With PSM.Library we don't get a direct "fired now" callback, so we approximate by recording the ZC ISR time.
+volatile uint32_t lastFireUs = 0;
 
 // ================== SCALE ==================
 AcaiaArduinoBLE scale(false);
@@ -176,7 +206,7 @@ enum ProfilingState {
 };
 
 ProfilingState profilingState = IDLE;
-uint8_t currentPowerLevel = MIN_POWER_PCT;
+uint16_t currentPowerLevel_x10 = MIN_POWER_X10;
 uint32_t stateStartTime = 0;
 bool buttonPressed = false;
 bool buttonStopTriggered = false;
@@ -280,7 +310,7 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t lengt
       if (cmd == "GO") {
         if (profilingState == IDLE) {
           profilingState = WAITING_FOR_BUTTON;
-          currentPowerLevel = MIN_POWER_PCT;
+          currentPowerLevel_x10 = MIN_POWER_X10;
           stateStartTime = millis();
           idleMessagePrinted = false;
           logLine("[PROFILE] Starting profiling sequence...");
@@ -291,7 +321,7 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t lengt
       } else if (cmd == "STOP") {
         if (profilingState != IDLE) {
           profilingState = IDLE;
-          currentPowerPct = 100; // boiler refill
+          currentPower_x10 = 1000; // boiler refill
           idleMessagePrinted = false;
           logLine("[PROFILE] Profiling stopped by user (pump at 100% for boiler refill)");
         }
@@ -301,9 +331,9 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t lengt
               profilingState == WAITING_FOR_BUTTON ? "WAITING_FOR_BUTTON" :
               profilingState == RECORDING ? "RECORDING" : "PAUSING");
         s += ", Power: ";
-        s += String((unsigned)currentPowerPct);
+        s += String((float)currentPower_x10 / 10.0f, 1);
         s += "%, Current Level: ";
-        s += String((unsigned)currentPowerLevel);
+        s += String((float)currentPowerLevel_x10 / 10.0f, 1);
         s += "%";
         s += " | p_raw=";
         s += String(lastPressureBar_raw, 2);
@@ -324,63 +354,49 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t lengt
   }
 }
 
-// ================== HELPER FUNCTIONS ==================
-static inline uint8_t fireCyclesFor(uint8_t pct) {
-  return (uint16_t)pct * BUCKET_SIZE / 100;
+// Hook invoked by PSM.Library on every ZC interrupt.
+// We use it as a timestamp for ADC quieting (best-effort).
+void onPSMInterrupt() {
+  lastFireUs = (uint32_t)micros();
 }
 
-// ================== TIMER ISR ==================
-void IRAM_ATTR onOffTimer() {
-  gpio_set_level((gpio_num_t)DIM_PIN, 0);
-  timerStop(offTimer);
+// ================== PER-STEP PRESSURE STATS ==================
+uint32_t n_total_pressure_samples = 0;
+uint32_t n_valid_pressure_samples = 0;
+double pressure_sum_bar = 0.0;
+double pressure_sumsq_bar2 = 0.0;
+
+void resetPressureStats() {
+  n_total_pressure_samples = 0;
+  n_valid_pressure_samples = 0;
+  pressure_sum_bar = 0.0;
+  pressure_sumsq_bar2 = 0.0;
 }
 
-// ================== ZERO CROSS ISR ==================
-void IRAM_ATTR onZeroCross() {
-  zcCount++;
+void accumulatePressureSample(float pBar) {
+  // Count totals regardless of validity (windowed by caller)
+  n_total_pressure_samples++;
+  // NOTE: left in place from per-step stats mode (currently unused)
+  // if (pBar <= MIN_VALID_PRESSURE_BAR) return; // invalid (EMI / dropout)
 
-  bucketIdx++;
-  if (bucketIdx >= BUCKET_SIZE) bucketIdx = 0;
-
-  const uint8_t fireCycles = fireCyclesFor(currentPowerPct);
-  if (fireCycles == 0) return;
-  if (bucketIdx >= fireCycles) return;
-
-  gpio_set_level((gpio_num_t)DIM_PIN, 1);
-
-  timerWrite(offTimer, 0);
-  timerAlarm(offTimer, HOLD_US, false, 0);
-  timerStart(offTimer);
-
-  fireCount++;
+  n_valid_pressure_samples++;
+  pressure_sum_bar += (double)pBar;
+  pressure_sumsq_bar2 += (double)pBar * (double)pBar;
 }
 
-// ================== FLOW CALC ==================
-float computeFlow(float weight, uint32_t nowMs) {
-  if (isnan(lastWeight)) {
-    lastWeight = weight;
-    lastWeightMs = nowMs;
-    return 0.0;
+void computePressureStats(float& meanBar, float& stdevBar) {
+  if (n_valid_pressure_samples == 0) {
+    meanBar = -1.0f;
+    stdevBar = -1.0f;
+    return;
   }
 
-  uint32_t dtMs = nowMs - lastWeightMs;
-  if (dtMs < 80) return flowEMA;
-
-  float dw = weight - lastWeight;
-  lastWeight = weight;
-  lastWeightMs = nowMs;
-
-  float rawFlow = 0.0;
-  if (fabs(dw) >= FLOW_DEADBAND_G && dtMs > 0) {
-    rawFlow = (dw * 1000.0f) / dtMs;
-  }
-
-  flowEMA = isnan(flowEMA)
-              ? rawFlow
-              : (FLOW_ALPHA * rawFlow + (1.0f - FLOW_ALPHA) * flowEMA);
-
-  if (flowEMA < 0) flowEMA = 0;
-  return flowEMA;
+  const double n = (double)n_valid_pressure_samples;
+  const double mean = pressure_sum_bar / n;
+  double var = (pressure_sumsq_bar2 / n) - (mean * mean);
+  if (var < 0.0) var = 0.0; // numerical guard
+  meanBar = (float)mean;
+  stdevBar = (float)sqrt(var);
 }
 
 // ================== BUTTON CONTROL ==================
@@ -413,16 +429,12 @@ void setup() {
   Serial.println("Auto Pump Profiler (WebSocket-controlled)");
   Serial.println("========================================");
   Serial.println();
-  Serial.println("Power levels: 30% to 100% (10% steps)");
+  Serial.println("Power levels: 25.0% to 100.0% (15.0% steps)");
   Serial.println("Recording: 12 seconds per level");
-  Serial.println("Pause: 40 seconds between levels");
+  Serial.println("Pause: 2 seconds between levels");
   Serial.println();
   
-  // GPIO (ISR-safe)
-  gpio_reset_pin((gpio_num_t)DIM_PIN);
-  gpio_set_direction((gpio_num_t)DIM_PIN, GPIO_MODE_OUTPUT);
-  gpio_set_level((gpio_num_t)DIM_PIN, 0);
-
+  // GPIO
   pinMode(ZC_PIN, INPUT_PULLUP);
   pinMode(OUT_PIN, OUTPUT);
   digitalWrite(OUT_PIN, LOW);
@@ -433,11 +445,15 @@ void setup() {
   analogSetPinAttenuation(PRESSURE_PIN, ADC_11db);
   analogSetAttenuation(ADC_11db);
 
-  offTimer = timerBegin(1000000); // 1 MHz = 1 µs ticks
-  timerAttachInterrupt(offTimer, &onOffTimer);
-  timerStop(offTimer);
+  // PSM.Library setup:
+  // Force full-cycle click semantics (~60 clicks/s max @ 60Hz) for Gaggiuino model compatibility.
+  // ZC interrupts are typically half-cycles (~120/s @ 60Hz).
+  unsigned int cps = pump.cps();
+  pump.setDivider(2);
+  pump.initTimer(cps > 110u ? 5000u : 6000u);
 
-  attachInterrupt(digitalPinToInterrupt(ZC_PIN), onZeroCross, RISING);
+  // Default to full power for boiler refill while idle.
+  setPumpPowerX10(1000);
 
   BLE.begin();
   scale.init();
@@ -452,14 +468,16 @@ void setup() {
     initWebSocket();
   }
 
-  // Print CSV header (pressure appended; existing analyzers still work by reading first 4 cols)
-  logLine("time_ms,power_pct,weight_g,flow_gps,pressure_bar");
+  // Stream raw samples (matches previous captures)
+  logLine("time_ms,power_pct,weight_g,flow_gps,pressure_bar,clicks_total,clicks_per_s");
   logLine("Ready. Send 'GO' via WebSocket (or Serial) to begin profiling sequence.");
 }
 
 // ================== LOOP ==================
 void loop() {
   static uint32_t lastLogMs = 0;
+  static long lastClicks = 0;
+  static uint32_t lastClicksMs = 0;
   uint32_t now = millis();
 
   // WebSocket server loop
@@ -493,7 +511,7 @@ void loop() {
     if (cmd == "GO") {
       if (profilingState == IDLE) {
         profilingState = WAITING_FOR_BUTTON;
-        currentPowerLevel = MIN_POWER_PCT;
+        currentPowerLevel_x10 = MIN_POWER_X10;
         stateStartTime = now;
         idleMessagePrinted = false; // Reset idle message flag
         logLine("[PROFILE] Starting profiling sequence...");
@@ -504,7 +522,7 @@ void loop() {
     } else if (cmd == "STOP") {
       if (profilingState != IDLE) {
         profilingState = IDLE;
-        currentPowerPct = 100; // 100% power to allow boiler refill
+        setPumpPowerX10(1000); // 100% power to allow boiler refill
         idleMessagePrinted = false; // Reset so it prints "idling" again
         logLine("[PROFILE] Profiling stopped by user (pump at 100% for boiler refill)");
       }
@@ -514,9 +532,9 @@ void loop() {
             profilingState == WAITING_FOR_BUTTON ? "WAITING_FOR_BUTTON" :
             profilingState == RECORDING ? "RECORDING" : "PAUSING");
       s += ", Power: ";
-      s += String((unsigned)currentPowerPct);
+      s += String((float)currentPower_x10 / 10.0f, 1);
       s += "%, Current Level: ";
-      s += String((unsigned)currentPowerLevel);
+      s += String((float)currentPowerLevel_x10 / 10.0f, 1);
       s += "%";
       logLine(s);
     }
@@ -525,7 +543,7 @@ void loop() {
   // State machine for profiling
   switch (profilingState) {
     case IDLE:
-      currentPowerPct = 100;  // 100% power to allow boiler refill
+      setPumpPowerX10(1000);  // 100% power to allow boiler refill
       if (!idleMessagePrinted) {
         logLine("[PROFILE] Idling - waiting for GO command (pump at 100% for boiler refill)");
         idleMessagePrinted = true;
@@ -544,21 +562,24 @@ void loop() {
         // Start recording
         profilingState = RECORDING;
         stateStartTime = now;
-        currentPowerPct = currentPowerLevel;
+        setPumpPowerX10(currentPowerLevel_x10);
+        pump.resetCounter();
+        lastClicks = 0;
+        lastClicksMs = 0;
         
-        logLine("[PROFILE] Recording started at " + String((unsigned)currentPowerLevel) + "% power (" + String((unsigned long)now) + " ms)");
+        logLine("[PROFILE] Recording started at " + String((float)currentPowerLevel_x10 / 10.0f, 1) + "% power (" + String((unsigned long)now) + " ms)");
       }
       break;
       
     case RECORDING:
       // Check if recording period is complete
       if (now - stateStartTime >= RECORDING_DURATION_MS) {
-        logLine("[PROFILE] Recording ended at " + String((unsigned)currentPowerLevel) + "% power (" + String((unsigned long)now) + " ms)");
+        logLine("[PROFILE] Recording ended at " + String((float)currentPowerLevel_x10 / 10.0f, 1) + "% power (" + String((unsigned long)now) + " ms)");
         
         // Move to pause state
         profilingState = PAUSING;
         stateStartTime = now;
-        currentPowerPct = 100; // 100% power during pause to allow boiler refill
+        setPumpPowerX10(1000); // 100% power during pause to allow boiler refill
         
         // Trigger button to stop shot
         triggerButton();
@@ -571,39 +592,71 @@ void loop() {
       // Check if pause period is complete
       if (now - stateStartTime >= PAUSE_DURATION_MS) {
         // Move to next power level
-        currentPowerLevel += POWER_STEP_PCT;
+        currentPowerLevel_x10 += POWER_STEP_X10;
         
-        if (currentPowerLevel > MAX_POWER_PCT) {
+        if (currentPowerLevel_x10 > MAX_POWER_X10) {
           // Profiling complete
           profilingState = IDLE;
-          currentPowerPct = 100; // 100% power to allow boiler refill
+          setPumpPowerX10(1000); // 100% power to allow boiler refill
           idleMessagePrinted = false; // Reset so it prints "idling" again
           logLine("[PROFILE] Profiling sequence complete!");
         } else {
           // Start next recording
           profilingState = WAITING_FOR_BUTTON;
           stateStartTime = now;
-          logLine("[PROFILE] Next power level: " + String((unsigned)currentPowerLevel) + "%");
+          logLine("[PROFILE] Next power level: " + String((float)currentPowerLevel_x10 / 10.0f, 1) + "%");
         }
       }
       break;
   }
 
-  // Read weight and log data (ONLY log during RECORDING state)
+  // Stream data while recording (previous behavior)
   if (scale.newWeightAvailable() && profilingState == RECORDING) {
-    float weight = scale.getWeight();
-    float flow = computeFlow(weight, now);
+    const float weight = scale.getWeight();
+    const uint32_t nowMs = now;
 
-    if (now - lastLogMs >= LOG_INTERVAL_MS) {
-      lastLogMs = now;
-      
-      char buf[96];
-      snprintf(buf, sizeof(buf), "%lu,%u,%.2f,%.3f,%.2f",
-               (unsigned long)now,
-               (unsigned)currentPowerPct,
+    // Flow calc (EMA of mass delta)
+    if (isnan(lastWeight)) {
+      lastWeight = weight;
+      lastWeightMs = nowMs;
+      flowEMA = 0.0f;
+    }
+
+    const uint32_t dtMs = nowMs - lastWeightMs;
+    if (dtMs >= 80) {
+      const float dw = weight - lastWeight;
+      lastWeight = weight;
+      lastWeightMs = nowMs;
+
+      float rawFlow = 0.0f;
+      if (fabs(dw) >= FLOW_DEADBAND_G && dtMs > 0) {
+        rawFlow = (dw * 1000.0f) / (float)dtMs;
+      }
+
+      flowEMA = (FLOW_ALPHA * rawFlow + (1.0f - FLOW_ALPHA) * flowEMA);
+      if (flowEMA < 0) flowEMA = 0;
+    }
+
+    if (nowMs - lastLogMs >= LOG_INTERVAL_MS) {
+      lastLogMs = nowMs;
+
+      const long clicksNow = pump.getCounter();
+      float clicksPerS = 0.0f;
+      if (lastClicksMs != 0 && nowMs > lastClicksMs) {
+        clicksPerS = ((float)(clicksNow - lastClicks) * 1000.0f) / (float)(nowMs - lastClicksMs);
+      }
+      lastClicks = clicksNow;
+      lastClicksMs = nowMs;
+
+      char buf[160];
+      snprintf(buf, sizeof(buf), "%lu,%.1f,%.2f,%.3f,%.2f,%ld,%.2f",
+               (unsigned long)nowMs,
+               (float)currentPower_x10 / 10.0f,
                weight,
-               flow,
-               currentPressureBar);
+               flowEMA,
+               currentPressureBar,
+               clicksNow,
+               clicksPerS);
       logLine(String(buf));
     }
   }

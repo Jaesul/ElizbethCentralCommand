@@ -69,6 +69,7 @@ BLEByteCharacteristic weightCharacteristic("0xFF11", BLEWrite | BLERead);
 
 // Global variables
 float currentWeight = 0;
+
 uint8_t goalWeight = 0;
 float weightOffset = 0;
 int buttonArr[BUTTON_STATE_ARRAY_LENGTH];
