@@ -18,6 +18,7 @@ import type { ShotStopperData } from "~/types/shotstopper";
 import { Button } from "~/components/ui/button";
 import { useFlowShotHistory } from "~/hooks/useFlowShotHistory";
 import { FlowShotChart } from "~/components/FlowShotChart";
+import { PressureFlowChart } from "~/components/PressureFlowChart";
 
 // Determine WebSocket URL - ESP32 is now the WebSocket server via mDNS
 const getWebSocketUrl = () => {
@@ -74,6 +75,8 @@ export function ShotStopperPage() {
   // Real WebSocket connection for ShotStopper (only when not in testing mode)
   const { 
     isConnected: wsConnected, 
+    connectionState: wsConnectionState,
+    reconnectAttempt: wsReconnectAttempt,
     data: wsData, 
     error: wsError, 
     lastMessageTime: wsLastMessageTime, 
@@ -91,7 +94,6 @@ export function ShotStopperPage() {
     error: flowError,
     sensor: flowSensor,
     shot: flowShot,
-    logs: flowLogs,
     rawJson: flowRawJson,
     sendCommand: flowSendCommand,
     reconnect: flowReconnect,
@@ -99,11 +101,13 @@ export function ShotStopperPage() {
     url: isTestingMode ? "" : flowWsUrl,
     reconnectInterval: 5000,
     reconnectOnClose: true,
-    maxLogs: 800,
+    // Keep raw JSON bounded for copy/paste debugging without runaway memory.
+    maxLogs: 400,
     includeRawJsonDuringShot: true,
   });
   const { points: flowPoints, phaseMarkers: flowPhaseMarkers, isActive: flowShotActive } = useFlowShotHistory(flowSensor, flowShot);
-  const [flowLogCopyStatus, setFlowLogCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+
+  const [flowJsonCopyStatus, setFlowJsonCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [flowCsvCopyStatus, setFlowCsvCopyStatus] = useState<"idle" | "copied" | "error">("idle");
 
   const buildPressureCsv = () => {
@@ -147,35 +151,26 @@ export function ShotStopperPage() {
     }
   };
 
-  const handleCopyFlowLogs = async () => {
-    try {
-      const text = (flowLogs.length ? flowLogs.join("\n") : "[no logs yet]") + "\n";
-      await navigator.clipboard.writeText(text);
-      setFlowLogCopyStatus("copied");
-      window.setTimeout(() => setFlowLogCopyStatus("idle"), 1200);
-    } catch {
-      setFlowLogCopyStatus("error");
-      window.setTimeout(() => setFlowLogCopyStatus("idle"), 1500);
-    }
-  };
-
   const handleCopyFlowRawJson = async () => {
     try {
       const text = (flowRawJson.length ? flowRawJson.join("\n") : "[no shot JSON yet]") + "\n";
       await navigator.clipboard.writeText(text);
-      setFlowLogCopyStatus("copied");
-      window.setTimeout(() => setFlowLogCopyStatus("idle"), 1200);
+      setFlowJsonCopyStatus("copied");
+      window.setTimeout(() => setFlowJsonCopyStatus("idle"), 1200);
     } catch {
-      setFlowLogCopyStatus("error");
-      window.setTimeout(() => setFlowLogCopyStatus("idle"), 1500);
+      setFlowJsonCopyStatus("error");
+      window.setTimeout(() => setFlowJsonCopyStatus("idle"), 1500);
     }
   };
 
   // Separate WebSocket connection for pressure reader
   const { 
     isConnected: pressureWsConnected, 
+    connectionState: pressureWsConnectionState,
+    reconnectAttempt: pressureWsReconnectAttempt,
     data: pressureWsData, 
     error: pressureWsError, 
+    lastMessageTime: pressureWsLastMessageTime,
     reconnect: pressureWsReconnect
   } = useWebSocket({
     url: isTestingMode ? "" : pressureWsUrl, // Don't connect in testing mode
@@ -211,8 +206,26 @@ export function ShotStopperPage() {
   
   const isConnected = isTestingMode ? true : (wsConnected || pressureWsConnected);
   const error = isTestingMode ? undefined : (wsError ?? pressureWsError);
-  // Don't use Date.now() in render; it will differ between SSR and client and cause hydration warnings.
-  const lastMessageTime = isTestingMode ? undefined : wsLastMessageTime;
+  // Prefer the most recent message time across sockets (ISO timestamps compare lexicographically).
+  const lastMessageTime = isTestingMode
+    ? undefined
+    : (wsLastMessageTime && pressureWsLastMessageTime
+        ? (wsLastMessageTime > pressureWsLastMessageTime ? wsLastMessageTime : pressureWsLastMessageTime)
+        : (wsLastMessageTime ?? pressureWsLastMessageTime));
+
+  const connectionState = isTestingMode
+    ? "connected"
+    : isConnected
+      ? "connected"
+      : (wsConnectionState === "stale" || pressureWsConnectionState === "stale")
+        ? "stale"
+        : (wsConnectionState === "reconnecting" || pressureWsConnectionState === "reconnecting")
+          ? "reconnecting"
+          : (wsConnectionState === "connecting" || pressureWsConnectionState === "connecting")
+            ? "connecting"
+            : "disconnected";
+
+  const reconnectAttempt = Math.max(wsReconnectAttempt ?? 0, pressureWsReconnectAttempt ?? 0);
 
   // Manual triac power control (for flow profiling comparisons)
   const [pumpPowerPct, setPumpPowerPct] = useState(100);
@@ -349,142 +362,16 @@ export function ShotStopperPage() {
               <Button onClick={() => flowSendCommand("STOP")} disabled={!flowConnected} variant="destructive">
                 STOP
               </Button>
+              <Button
+                onClick={() => flowSendCommand("PURGE")}
+                disabled={!flowConnected || flowShotActive}
+                variant="outline"
+              >
+                Purge
+              </Button>
               <Button onClick={() => flowSendCommand("STATUS")} disabled={!flowConnected} variant="outline">
                 STATUS
               </Button>
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-              <div>
-                <div className="text-muted-foreground">brewActive</div>
-                <div className="font-medium">{flowSensor?.brewActive ? "true" : "false"}</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">pressure</div>
-                <div className="font-medium">{(flowShot?.pressure ?? flowSensor?.pressure ?? 0).toFixed(2)} bar</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">weight</div>
-                <div className="font-medium">{(flowShot?.shotWeight ?? flowSensor?.weight ?? 0).toFixed(2)} g</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">phase</div>
-                <div className="font-medium">
-                  {flowShot?.phaseIdx ?? "-"} {flowShot?.phaseType ? `(${flowShot.phaseType})` : ""}
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-              <div>
-                <div className="text-muted-foreground">targetP</div>
-                <div className="font-medium">{(flowShot?.targetPressure ?? 0).toFixed(2)} bar</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">targetF</div>
-                <div className="font-medium">{(flowShot?.targetPumpFlow ?? 0).toFixed(2)} ml/s</div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">clicks / cps</div>
-                <div className="font-medium">
-                  {(flowShot?.pumpClicks ?? flowSensor?.pumpClicks ?? 0).toString()} /{" "}
-                  {(flowShot?.pumpCps ?? flowSensor?.pumpCps ?? 0).toFixed(1)}
-                </div>
-              </div>
-              <div>
-                <div className="text-muted-foreground">power</div>
-                <div className="font-medium">{(flowShot?.pumpPowerPct ?? flowSensor?.pumpPowerPct ?? 0).toFixed(1)}%</div>
-              </div>
-            </div>
-
-            <div className="text-xs text-muted-foreground">
-              WS: <code>{flowWsUrl}</code> (override with <code>NEXT_PUBLIC_FLOW_WS_URL</code>)
-            </div>
-
-            <div className="rounded-md border p-3 bg-muted/30 max-h-48 overflow-auto text-xs font-mono whitespace-pre-wrap">
-              {(flowLogs.slice(-30).join("\n") || "[no logs yet]")}
-            </div>
-
-            {/* Copy/paste-friendly log panel */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-medium">Logs (copy/paste)</div>
-                <div className="flex items-center gap-2">
-                  {flowLogCopyStatus === "copied" && (
-                    <span className="text-xs text-muted-foreground">Copied</span>
-                  )}
-                  {flowLogCopyStatus === "error" && (
-                    <span className="text-xs text-destructive">Copy failed</span>
-                  )}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleCopyFlowLogs}
-                    disabled={flowLogs.length === 0}
-                  >
-                    Copy Logs
-                  </Button>
-                </div>
-              </div>
-              <textarea
-                className="w-full min-h-[180px] rounded-md border bg-background p-3 text-xs font-mono"
-                readOnly
-                value={(flowLogs.length ? flowLogs.join("\n") : "[no logs yet]")}
-              />
-              <div className="text-xs text-muted-foreground">
-                Tip: Copy logs right after a shot finishes so we can interpret phase-by-phase behavior together.
-              </div>
-            </div>
-
-            {/* Full JSON payload stream (copy/paste) */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-medium">Shot JSON payloads (raw)</div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCopyFlowRawJson}
-                  disabled={flowRawJson.length === 0}
-                >
-                  Copy JSON
-                </Button>
-              </div>
-              <textarea
-                className="w-full min-h-[220px] rounded-md border bg-background p-3 text-xs font-mono"
-                readOnly
-                value={(flowRawJson.length ? flowRawJson.join("\n") : "[no shot JSON yet]")}
-              />
-              <div className="text-xs text-muted-foreground">
-                This includes the exact WS JSON messages during the shot (sensor + shot updates).
-              </div>
-            </div>
-
-            {/* CSV export (pressure actual + target) */}
-            <div className="space-y-2">
-              <div className="text-sm font-medium">CSV export (pressure)</div>
-              <div className="text-xs text-muted-foreground">
-                Exports <code>t_ms</code>, <code>pressure_bar</code>, <code>target_pressure_bar</code> from the recorded shot points.
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleDownloadPressureCsv}
-                  disabled={flowPoints.length === 0}
-                >
-                  Download CSV
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCopyPressureCsv}
-                  disabled={flowPoints.length === 0}
-                >
-                  Copy CSV
-                </Button>
-                {flowCsvCopyStatus === "copied" && <span className="text-xs text-muted-foreground">Copied</span>}
-                {flowCsvCopyStatus === "error" && <span className="text-xs text-destructive">Copy failed</span>}
-              </div>
             </div>
 
             {/* Charts */}
@@ -493,6 +380,71 @@ export function ShotStopperPage() {
                 <FlowShotChart points={flowPoints} phaseMarkers={flowPhaseMarkers} />
               </div>
             )}
+
+            {/* Extra chart: pressure/flow only, fixed bounds */}
+            {flowShotActive && (
+              <div className="pt-3">
+                <PressureFlowChart points={flowPoints} phaseMarkers={flowPhaseMarkers} />
+              </div>
+            )}
+
+            {/* Debug exports (below graph) */}
+            <div className="pt-4 space-y-4">
+              {/* CSV export (pressure actual + target) */}
+              <div className="space-y-2">
+                <div className="text-sm font-medium">CSV export (pressure)</div>
+                <div className="text-xs text-muted-foreground">
+                  Exports <code>t_ms</code>, <code>pressure_bar</code>, <code>target_pressure_bar</code> from the recorded shot points.
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDownloadPressureCsv}
+                    disabled={flowPoints.length === 0}
+                  >
+                    Download CSV
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCopyPressureCsv}
+                    disabled={flowPoints.length === 0}
+                  >
+                    Copy CSV
+                  </Button>
+                  {flowCsvCopyStatus === "copied" && <span className="text-xs text-muted-foreground">Copied</span>}
+                  {flowCsvCopyStatus === "error" && <span className="text-xs text-destructive">Copy failed</span>}
+                </div>
+              </div>
+
+              {/* Full JSON payload stream (copy/paste) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-sm font-medium">Shot JSON payloads (raw)</div>
+                  <div className="flex items-center gap-2">
+                    {flowJsonCopyStatus === "copied" && <span className="text-xs text-muted-foreground">Copied</span>}
+                    {flowJsonCopyStatus === "error" && <span className="text-xs text-destructive">Copy failed</span>}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleCopyFlowRawJson}
+                      disabled={flowRawJson.length === 0}
+                    >
+                      Copy JSON
+                    </Button>
+                  </div>
+                </div>
+                <textarea
+                  className="w-full min-h-[220px] rounded-md border bg-background p-3 text-xs font-mono"
+                  readOnly
+                  value={(flowRawJson.length ? flowRawJson.join("\n") : "[no shot JSON yet]")}
+                />
+                <div className="text-xs text-muted-foreground">
+                  This includes the exact WS JSON messages during the shot (sensor + shot updates).
+                </div>
+              </div>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -552,6 +504,8 @@ export function ShotStopperPage() {
       {/* Floating Connection Status Icon */}
       <FloatingConnectionIcon
         isConnected={isConnected}
+        connectionState={connectionState}
+        reconnectAttempt={reconnectAttempt}
         error={error}
         onReconnect={handleReconnect}
         lastMessageTime={lastMessageTime}

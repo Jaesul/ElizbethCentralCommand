@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type FlowWsAction = "sensor_data_update" | "shot_data_update" | "log_record";
+export type FlowWsConnectionState = "disconnected" | "connecting" | "connected" | "stale" | "reconnecting";
 
 export interface FlowSensorData {
   brewActive?: boolean;
@@ -45,10 +46,17 @@ export interface UseFlowProfilingWebSocketOptions {
   reconnectOnClose?: boolean;
   maxLogs?: number;
   includeRawJsonDuringShot?: boolean;
+  heartbeatIntervalMs?: number;
+  staleTimeoutMs?: number;
+  backoffMaxMs?: number;
+  backoffFactor?: number;
+  backoffJitterPct?: number;
 }
 
 export interface UseFlowProfilingWebSocketReturn {
   isConnected: boolean;
+  connectionState: FlowWsConnectionState;
+  reconnectAttempt: number;
   error: string | null;
   lastMessageTime: string | undefined;
   sensor: FlowSensorData | null;
@@ -65,8 +73,15 @@ export function useFlowProfilingWebSocket({
   reconnectOnClose = true,
   maxLogs = 200,
   includeRawJsonDuringShot = true,
+  heartbeatIntervalMs = 25000,
+  staleTimeoutMs = 60000,
+  backoffMaxMs = 60000,
+  backoffFactor = 2,
+  backoffJitterPct = 0.1,
 }: UseFlowProfilingWebSocketOptions): UseFlowProfilingWebSocketReturn {
   const [isConnected, setIsConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState<FlowWsConnectionState>("disconnected");
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [lastMessageTime, setLastMessageTime] = useState<string | undefined>();
   const [sensor, setSensor] = useState<FlowSensorData | null>(null);
@@ -76,6 +91,10 @@ export function useFlowProfilingWebSocket({
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const staleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastRxMsRef = useRef<number>(0);
+  const reconnectAttemptRef = useRef<number>(0);
   const isConnectingRef = useRef(false);
   const shotActiveRef = useRef(false);
 
@@ -101,9 +120,57 @@ export function useFlowProfilingWebSocket({
     [maxLogs],
   );
 
+  const clearTimers = useCallback(() => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
+    if (staleTimeoutRef.current) {
+      clearTimeout(staleTimeoutRef.current);
+      staleTimeoutRef.current = null;
+    }
+  }, []);
+
+  const noteRx = useCallback(() => {
+    const now = Date.now();
+    lastRxMsRef.current = now;
+    if (staleTimeoutRef.current) clearTimeout(staleTimeoutRef.current);
+    staleTimeoutRef.current = setTimeout(() => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      setConnectionState("stale");
+      setError((prev) => prev ?? `WebSocket stale (no data for ${Math.round(staleTimeoutMs / 1000)}s)`);
+      pushLog("[ui] stale connection; closing to force reconnect");
+      try {
+        ws.close(4000, "stale");
+      } catch {
+        // ignore
+      }
+    }, staleTimeoutMs);
+  }, [pushLog, staleTimeoutMs]);
+
+  const computeBackoffDelayMs = useCallback(
+    (attempt: number) => {
+      const base = Math.max(250, reconnectInterval);
+      const factor = Math.max(1.1, backoffFactor);
+      const max = Math.max(base, backoffMaxMs);
+      const exp = Math.min(30, Math.max(0, attempt - 1));
+      const raw = Math.min(max, Math.round(base * Math.pow(factor, exp)));
+      const jitter = Math.max(0, Math.min(0.5, backoffJitterPct));
+      const scale = 1 + (Math.random() * 2 - 1) * jitter; // ±jitter
+      return Math.max(250, Math.round(raw * scale));
+    },
+    [backoffFactor, backoffJitterPct, backoffMaxMs, reconnectInterval],
+  );
+
   const connect = useCallback(() => {
     if (!url || url.trim() === "") {
       isConnectingRef.current = false;
+      setConnectionState("disconnected");
       return;
     }
     if (isConnectingRef.current || (wsRef.current && wsRef.current.readyState === WebSocket.OPEN)) {
@@ -114,13 +181,11 @@ export function useFlowProfilingWebSocket({
       wsRef.current.close();
       wsRef.current = null;
     }
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
+    clearTimers();
 
     isConnectingRef.current = true;
     setError(null);
+    setConnectionState(reconnectAttemptRef.current > 0 ? "reconnecting" : "connecting");
 
     try {
       const ws = new WebSocket(url);
@@ -130,14 +195,37 @@ export function useFlowProfilingWebSocket({
         setIsConnected(true);
         setError(null);
         isConnectingRef.current = false;
+        setConnectionState("connected");
+        reconnectAttemptRef.current = 0;
+        setReconnectAttempt(0);
+        noteRx();
         pushLog(`[ui] connected: ${url}`);
+
+        // Heartbeat: low-rate ping so idle links are detected as alive/dead without UI blocking.
+        if (heartbeatIntervalMs > 0) {
+          if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+          heartbeatIntervalRef.current = setInterval(() => {
+            const w = wsRef.current;
+            if (!w || w.readyState !== WebSocket.OPEN) return;
+            try {
+              // Avoid log spam; PONG responses are also ignored below.
+              w.send("PING");
+            } catch {
+              // ignore; onclose will handle reconnect.
+            }
+          }, heartbeatIntervalMs);
+        }
       };
 
       ws.onmessage = (event) => {
         const nowIso = new Date().toISOString();
         setLastMessageTime(nowIso);
+        noteRx();
 
         const raw = String(event.data ?? "");
+        if (raw.trim() === "PONG") {
+          return;
+        }
         // Some servers may send plain text (e.g. STATUS) - keep it as a log line.
         if (!raw.trim().startsWith("{")) {
           pushLog(raw.trim());
@@ -200,56 +288,84 @@ export function useFlowProfilingWebSocket({
         setIsConnected(false);
         isConnectingRef.current = false;
         wsRef.current = null;
+        clearTimers();
 
         if (reconnectOnClose && event.code !== 1000) {
-          reconnectTimeoutRef.current = setTimeout(() => connect(), reconnectInterval);
+          const nextAttempt = reconnectAttemptRef.current + 1;
+          reconnectAttemptRef.current = nextAttempt;
+          setReconnectAttempt(nextAttempt);
+          setConnectionState("reconnecting");
+          const delay = computeBackoffDelayMs(nextAttempt);
+          reconnectTimeoutRef.current = setTimeout(() => connect(), delay);
+        } else {
+          setConnectionState("disconnected");
         }
       };
     } catch {
       setError("Failed to create WebSocket connection");
       isConnectingRef.current = false;
+      setConnectionState("disconnected");
 
       if (reconnectOnClose) {
-        reconnectTimeoutRef.current = setTimeout(() => connect(), reconnectInterval);
+        const nextAttempt = reconnectAttemptRef.current + 1;
+        reconnectAttemptRef.current = nextAttempt;
+        setReconnectAttempt(nextAttempt);
+        setConnectionState("reconnecting");
+        const delay = computeBackoffDelayMs(nextAttempt);
+        reconnectTimeoutRef.current = setTimeout(() => connect(), delay);
       }
     }
-  }, [url, reconnectInterval, reconnectOnClose, pushLog]);
+  }, [
+    url,
+    reconnectOnClose,
+    pushLog,
+    pushRaw,
+    clearTimers,
+    computeBackoffDelayMs,
+    noteRx,
+    heartbeatIntervalMs,
+    includeRawJsonDuringShot,
+  ]);
 
   const reconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
+    clearTimers();
+    reconnectAttemptRef.current = 0;
+    setReconnectAttempt(0);
     connect();
-  }, [connect]);
+  }, [clearTimers, connect]);
 
-  const sendCommand = useCallback((cmd: "GO" | "STOP" | "STATUS" | "PING") => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      try {
-        wsRef.current.send(cmd);
-        pushLog(`[tx] ${cmd}`);
-      } catch {
-        setError("Failed to send command");
+  const sendCommand = useCallback(
+    (cmd: "GO" | "STOP" | "STATUS" | "PING") => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        try {
+          wsRef.current.send(cmd);
+          pushLog(`[tx] ${cmd}`);
+        } catch {
+          setError("Failed to send command");
+        }
+      } else {
+        setError("WebSocket not connected");
       }
-    } else {
-      setError("WebSocket not connected");
-    }
-  }, [pushLog]);
+    },
+    [pushLog],
+  );
 
   useEffect(() => {
     if (!url) return;
     connect();
     return () => {
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      clearTimers();
       if (wsRef.current) {
         wsRef.current.close(1000, "Component unmounting");
         wsRef.current = null;
       }
     };
-  }, [connect, url]);
+  }, [connect, url, clearTimers]);
 
   return {
     isConnected,
+    connectionState,
+    reconnectAttempt,
     error,
     lastMessageTime,
     sensor,

@@ -7,39 +7,50 @@ import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "~/components/ui/chart";
 import type { FlowPhaseMarker, FlowShotPoint } from "~/hooks/useFlowShotHistory";
 
-type FlowChartRow = FlowShotPoint & { tS: number };
+type Row = FlowShotPoint & { tS: number };
 
 interface FlowShotChartProps {
   points: FlowShotPoint[];
   phaseMarkers?: FlowPhaseMarker[];
 }
 
-const pressureConfig = {
-  pressure: { label: "Pressure", color: "var(--chart-1)" },
-  targetPressure: { label: "Target Pressure", color: "var(--chart-4)" },
+// Single combined shot chart: weight on left axis, pressure/flows/targets on right axis.
+const chartConfig = {
+  weight: { label: "Weight", color: "var(--chart-1)" },
+  pressure: { label: "Pressure", color: "var(--chart-2)" },
+  pumpFlow: { label: "Pump Flow (pump)", color: "var(--chart-3)" },
+  weightFlow: { label: "Flow (scale)", color: "var(--chart-4)" },
+  targetPressure: { label: "Target Pressure", color: "color-mix(in oklab, var(--chart-2) 65%, transparent)" },
+  targetPumpFlow: { label: "Target Flow", color: "color-mix(in oklab, var(--chart-3) 65%, transparent)" },
 } satisfies ChartConfig;
 
-const weightConfig = {
-  weight: { label: "Weight", color: "var(--chart-2)" },
-  weightFlow: { label: "Weight Flow", color: "var(--chart-3)" },
-} satisfies ChartConfig;
-
-const pumpConfig = {
-  pumpPowerPct: { label: "Pump Power", color: "var(--chart-1)" },
-  pumpCps: { label: "Pump CPS", color: "var(--chart-2)" },
-} satisfies ChartConfig;
+function lastDefined(points: FlowShotPoint[], key: keyof FlowShotPoint): number | undefined {
+  for (let i = points.length - 1; i >= 0; i--) {
+    const v = points[i]?.[key];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  return undefined;
+}
 
 export function FlowShotChart({ points, phaseMarkers = [] }: FlowShotChartProps) {
-  const data: FlowChartRow[] = React.useMemo(
-    () => points.map((p) => ({ ...p, tS: p.tMs / 1000 })),
-    [points],
-  );
+  const data: Row[] = React.useMemo(() => points.map((p) => ({ ...p, tS: p.tMs / 1000 })), [points]);
+
+  const current = React.useMemo(() => {
+    return {
+      weight: lastDefined(points, "weight"),
+      pressure: lastDefined(points, "pressure"),
+      pumpFlow: lastDefined(points, "pumpFlow"),
+      weightFlow: lastDefined(points, "weightFlow"),
+      targetPressure: lastDefined(points, "targetPressure"),
+      targetPumpFlow: lastDefined(points, "targetPumpFlow"),
+    };
+  }, [points]);
 
   if (data.length === 0) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Flow Profiling Charts</CardTitle>
+          <CardTitle>Shot Chart</CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
           Start a shot to populate the chart.
@@ -49,151 +60,120 @@ export function FlowShotChart({ points, phaseMarkers = [] }: FlowShotChartProps)
   }
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Pressure (Actual vs Target)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ChartContainer config={pressureConfig} className="h-[260px] w-full">
-            <LineChart data={data} margin={{ left: 8, right: 8, top: 12, bottom: 8 }}>
+    <Card>
+      <CardHeader>
+        <CardTitle>Shot Chart</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-4 md:grid-cols-[1fr_240px] md:items-start">
+          <ChartContainer config={chartConfig} className="h-[360px] w-full">
+            <LineChart data={data} margin={{ left: 8, right: 12, top: 12, bottom: 8 }}>
               <CartesianGrid vertical={false} />
               <XAxis dataKey="tS" tickLine={false} axisLine={false} tickMargin={8} />
-              <YAxis tickLine={false} axisLine={false} width={40} domain={[0, "dataMax + 1"]} />
+
+              {/* y1: weight */}
+              <YAxis yAxisId="y1" tickLine={false} axisLine={false} width={42} domain={[0, "dataMax + 5"]} />
+              {/* y2: pressure + flows */}
+              <YAxis
+                yAxisId="y2"
+                orientation="right"
+                tickLine={false}
+                axisLine={false}
+                width={46}
+                domain={[0, "dataMax + 2"]}
+              />
+
               <ChartTooltip content={<ChartTooltipContent />} />
 
+              {/* Phase markers */}
               {phaseMarkers.map((m) => (
                 <ReferenceLine
                   key={`phase-${m.tMs}`}
                   x={m.tMs / 1000}
+                  yAxisId="y2"
                   stroke="var(--border)"
                   strokeDasharray="3 3"
                   ifOverflow="extendDomain"
                 />
               ))}
 
+              {/* Actuals */}
+              <Line yAxisId="y1" type="linear" dataKey="weight" stroke="var(--color-weight)" dot={false} strokeWidth={2} isAnimationActive={false} />
+              <Line yAxisId="y2" type="linear" dataKey="pressure" stroke="var(--color-pressure)" dot={false} strokeWidth={2} isAnimationActive={false} />
+              <Line yAxisId="y2" type="linear" dataKey="pumpFlow" stroke="var(--color-pumpFlow)" dot={false} strokeWidth={2} isAnimationActive={false} />
+              <Line yAxisId="y2" type="linear" dataKey="weightFlow" stroke="var(--color-weightFlow)" dot={false} strokeWidth={2} isAnimationActive={false} />
+
+              {/* Targets (dashed) */}
               <Line
-                type="linear"
-                dataKey="pressure"
-                stroke="var(--chart-1)"
-                dot={false}
-                strokeWidth={2}
-                isAnimationActive={false}
-              />
-              <Line
+                yAxisId="y2"
                 type="linear"
                 dataKey="targetPressure"
-                stroke="var(--chart-4)"
+                stroke="var(--color-targetPressure)"
                 dot={false}
                 strokeWidth={2}
-                strokeDasharray="6 3"
+                strokeDasharray="8 4"
+                connectNulls
+                isAnimationActive={false}
+              />
+              <Line
+                yAxisId="y2"
+                type="linear"
+                dataKey="targetPumpFlow"
+                stroke="var(--color-targetPumpFlow)"
+                dot={false}
+                strokeWidth={2}
+                strokeDasharray="8 4"
+                connectNulls
                 isAnimationActive={false}
               />
             </LineChart>
           </ChartContainer>
-        </CardContent>
-      </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Weight + Weight Flow</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ChartContainer config={weightConfig} className="h-[260px] w-full">
-            <LineChart data={data} margin={{ left: 8, right: 8, top: 12, bottom: 8 }}>
-              <CartesianGrid vertical={false} />
-              <XAxis dataKey="tS" tickLine={false} axisLine={false} tickMargin={8} />
-              <YAxis yAxisId="w" tickLine={false} axisLine={false} width={40} domain={[0, "dataMax + 5"]} />
-              <YAxis
-                yAxisId="wf"
-                orientation="right"
-                tickLine={false}
-                axisLine={false}
-                width={44}
-                domain={[0, "dataMax + 1"]}
-              />
-              <ChartTooltip content={<ChartTooltipContent />} />
+          {/* External legend + current values */}
+          <div className="rounded-lg border bg-muted/20 p-3">
+            <div className="text-sm font-medium">Current</div>
+            <div className="mt-2 space-y-2 text-sm">
+              <LegendRow color="var(--color-weight)" label="Weight" value={current.weight} suffix=" g" decimals={2} />
+              <LegendRow color="var(--color-pressure)" label="Pressure" value={current.pressure} suffix=" bar" decimals={2} />
+              <LegendRow color="var(--color-pumpFlow)" label="Pump flow" value={current.pumpFlow} suffix=" ml/s" decimals={2} />
+              <LegendRow color="var(--color-weightFlow)" label="Scale flow" value={current.weightFlow} suffix=" g/s" decimals={2} />
+              <LegendRow dashed color="var(--color-targetPressure)" label="Target pressure" value={current.targetPressure} suffix=" bar" decimals={2} />
+              <LegendRow dashed color="var(--color-targetPumpFlow)" label="Target flow" value={current.targetPumpFlow} suffix=" ml/s" decimals={2} />
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
-              {phaseMarkers.map((m) => (
-                <ReferenceLine
-                  key={`phasew-${m.tMs}`}
-                  x={m.tMs / 1000}
-                  yAxisId="w"
-                  stroke="var(--border)"
-                  strokeDasharray="3 3"
-                  ifOverflow="extendDomain"
-                />
-              ))}
-
-              <Line
-                yAxisId="w"
-                type="linear"
-                dataKey="weight"
-                stroke="var(--chart-2)"
-                dot={false}
-                strokeWidth={2}
-                isAnimationActive={false}
-              />
-              <Line
-                yAxisId="wf"
-                type="linear"
-                dataKey="weightFlow"
-                stroke="var(--chart-3)"
-                dot={false}
-                strokeWidth={2}
-                isAnimationActive={false}
-              />
-            </LineChart>
-          </ChartContainer>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Pump Power + Click Rate</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ChartContainer config={pumpConfig} className="h-[240px] w-full">
-            <LineChart data={data} margin={{ left: 8, right: 8, top: 12, bottom: 8 }}>
-              <CartesianGrid vertical={false} />
-              <XAxis dataKey="tS" tickLine={false} axisLine={false} tickMargin={8} />
-              <YAxis yAxisId="p" tickLine={false} axisLine={false} width={40} domain={[0, 100]} />
-              <YAxis yAxisId="c" orientation="right" tickLine={false} axisLine={false} width={44} domain={[0, 70]} />
-              <ChartTooltip content={<ChartTooltipContent />} />
-
-              {phaseMarkers.map((m) => (
-                <ReferenceLine
-                  key={`phasep-${m.tMs}`}
-                  x={m.tMs / 1000}
-                  yAxisId="p"
-                  stroke="var(--border)"
-                  strokeDasharray="3 3"
-                  ifOverflow="extendDomain"
-                />
-              ))}
-
-              <Line
-                yAxisId="p"
-                type="linear"
-                dataKey="pumpPowerPct"
-                stroke="var(--chart-1)"
-                dot={false}
-                strokeWidth={2}
-                isAnimationActive={false}
-              />
-              <Line
-                yAxisId="c"
-                type="linear"
-                dataKey="pumpCps"
-                stroke="var(--chart-2)"
-                dot={false}
-                strokeWidth={2}
-                isAnimationActive={false}
-              />
-            </LineChart>
-          </ChartContainer>
-        </CardContent>
-      </Card>
+function LegendRow({
+  color,
+  label,
+  value,
+  suffix,
+  decimals = 2,
+  dashed = false,
+}: {
+  color: string;
+  label: string;
+  value: number | undefined;
+  suffix: string;
+  decimals?: number;
+  dashed?: boolean;
+}) {
+  const text = typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(decimals)}${suffix}` : "--";
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className={dashed ? "h-2 w-5 border-t-2 border-dashed" : "h-2 w-5 rounded-[2px]"}
+          style={dashed ? ({ borderColor: color } as React.CSSProperties) : ({ backgroundColor: color } as React.CSSProperties)}
+          aria-hidden
+        />
+        <span className="truncate text-muted-foreground">{label}</span>
+      </div>
+      <span className="font-mono tabular-nums">{text}</span>
     </div>
   );
 }

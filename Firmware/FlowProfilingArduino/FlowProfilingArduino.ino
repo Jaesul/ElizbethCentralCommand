@@ -25,6 +25,7 @@
 #include <PSM.h>
 #include <AcaiaArduinoBLE.h>
 
+#include "SimpleKalmanFilter.h"
 #include "profiling_phases.h"
 #include "profile_store.h"
 
@@ -73,6 +74,9 @@ static constexpr uint16_t PSM_RANGE = 100;
 PSM pump(ZC_PIN, DIM_PIN, PSM_RANGE, RISING, 1, 6);
 
 static constexpr uint16_t IDLE_PUMP_POWER_X10 = 1000; // set to 0 if you don't want refill behavior when idle
+// Prevent brief 100% pump spikes around GO/STOP transitions.
+// We keep pump OFF for a short time after STOP before re-applying idle refill power.
+static constexpr uint32_t IDLE_REFILL_DELAY_AFTER_STOP_MS = 2500;
 
 static inline void setPumpPowerX10(uint16_t pct_x10) {
   if (pct_x10 > 1000) pct_x10 = 1000;
@@ -280,7 +284,7 @@ static const char* PROFILE_JSON = R"json(
     {
       "type": "PRESSURE",
       "target": { "start": -1, "end": 3.0, "curve": "INSTANT", "time": 0 },
-      "restriction": 6.0,
+      "restriction": 12.0,
       "stopConditions": { "time": 10000 }
     },
     {
@@ -443,21 +447,30 @@ bool brewActive = false;
 uint32_t brewingStartedMs = 0;
 bool profileActive = false;
 uint32_t profileStartedMs = 0; // when we actually start profile timing (after pre-bleed)
+uint32_t lastShotStopMs = 0;
 
 // Diagnostic override: force pump to 100% regardless of profile.
 // Intended for sensor bring-up / sanity checks.
 
-// Ghost purge: after GO opens brew path, keep pump OFF for a fixed period BEFORE starting
-// the profile timer/telemetry. This makes the purge not part of the recorded/profiled shot.
-static constexpr uint32_t GHOST_PURGE_MS = 1500;
+// Post-shot bleed: after we decide the shot is "done", keep pump OFF but leave
+// brew path open for a short time before closing the machine brew.
+static constexpr uint32_t POST_SHOT_BLEED_MS = 1000;
+bool postShotBleedActive = false;
+uint32_t postShotBleedStartMs = 0;
+const char* postShotBleedReason = nullptr;
+
+// Manual purge: user-triggered (PURGE command). Opens brew path with pump OFF for 1s then closes.
+static constexpr uint32_t MANUAL_PURGE_DURATION_MS = 1000;
+bool manualPurgeActive = false;
+uint32_t manualPurgeStartMs = 0;
 
 // Legacy: previously used as a fixed startup grace. We now do pre-bleed + start profile timing from zero-pressure.
 static constexpr uint32_t STARTUP_GRACE_MS = 0;
 
 // Telemetry cadence:
-// - shot_data_update: higher rate for better chart resolution
+// - shot_data_update: keep moderate cadence like gaggiuino (~10 Hz) to avoid noisy UI plots
 // - sensor_data_update: ~1Hz (1000ms)
-static constexpr uint32_t SHOT_TELEMETRY_INTERVAL_MS = 20;
+static constexpr uint32_t SHOT_TELEMETRY_INTERVAL_MS = 100;
 static constexpr uint32_t SENSOR_TELEMETRY_INTERVAL_MS = 1000;
 uint32_t lastShotTelemetryMs = 0;
 uint32_t lastSensorTelemetryMs = 0;
@@ -466,6 +479,16 @@ static constexpr float SMOOTH_ALPHA = 0.25f;
 
 // Avoid spamming telemetry when idle; clients can use STATUS if they need a snapshot.
 static constexpr bool SEND_TELEMETRY_WHEN_IDLE = false;
+
+// Gaggiuino-style display smoothing: SimpleKalmanFilter on telemetry signals.
+// IMPORTANT: display-only (do NOT use for control loops).
+SimpleKalmanFilter kfTelemetryPressure(0.6f, 0.6f, 0.1f);
+SimpleKalmanFilter kfTelemetryPumpFlow(0.1f, 0.1f, 0.01f);
+SimpleKalmanFilter kfTelemetryWeightFlow(0.5f, 0.5f, 0.01f);
+
+float telemetryPressureBar = NAN;
+float telemetryPumpFlowMlps = NAN;
+float telemetryWeightFlowGps = NAN;
 
 // Clicks per second
 long lastClicks = 0;
@@ -514,6 +537,18 @@ static void updatePressureChangeSpeed(uint32_t nowMs) {
   lastP = currentState.smoothedPressure;
 }
 
+static void updateTelemetrySmoothing() {
+  // Start from already-smoothed signals used by control, then apply Kalman filter
+  // (matching gaggiuino's approach for UI-facing values).
+  const float p = currentState.smoothedPressure;
+  const float f = currentState.smoothedPumpFlow;
+  const float wf = currentState.smoothedWeightFlow;
+
+  telemetryPressureBar = kfTelemetryPressure.updateEstimate(p);
+  telemetryPumpFlowMlps = kfTelemetryPumpFlow.updateEstimate(f);
+  telemetryWeightFlowGps = kfTelemetryWeightFlow.updateEstimate(wf);
+}
+
 static void sendTelemetry(uint32_t nowMs) {
   // sensor_data_update (matches gaggiuino webserver/websocket.cpp keys)
   if ((brewActive || SEND_TELEMETRY_WHEN_IDLE)
@@ -527,9 +562,9 @@ static void sendTelemetry(uint32_t nowMs) {
     data["scalesPresent"] = currentState.scalesPresent;
     data["temperature"] = 0.0;
     data["waterLvl"] = 0;
-    data["pressure"] = currentState.smoothedPressure;
-    data["pumpFlow"] = currentState.smoothedPumpFlow;
-    data["weightFlow"] = currentState.smoothedWeightFlow;
+    data["pressure"] = isfinite(telemetryPressureBar) ? telemetryPressureBar : currentState.smoothedPressure;
+    data["pumpFlow"] = isfinite(telemetryPumpFlowMlps) ? telemetryPumpFlowMlps : currentState.smoothedPumpFlow;
+    data["weightFlow"] = isfinite(telemetryWeightFlowGps) ? telemetryWeightFlowGps : currentState.smoothedWeightFlow;
     data["weight"] = currentState.weight;
     // Extra debug fields (safe for clients to ignore)
     data["pumpClicks"] = (long)currentState.pumpClicks;
@@ -557,9 +592,9 @@ static void sendTelemetry(uint32_t nowMs) {
     // And include the internal profile timebase (starts after STARTUP_GRACE_MS).
     data["profileTimeInShot"] = snap.timeInShot;
     data["profileActive"] = profileActive;
-    data["pressure"] = snap.pressure;
-    data["pumpFlow"] = snap.pumpFlow;
-    data["weightFlow"] = snap.weightFlow;
+    data["pressure"] = isfinite(telemetryPressureBar) ? telemetryPressureBar : snap.pressure;
+    data["pumpFlow"] = isfinite(telemetryPumpFlowMlps) ? telemetryPumpFlowMlps : snap.pumpFlow;
+    data["weightFlow"] = isfinite(telemetryWeightFlowGps) ? telemetryWeightFlowGps : snap.weightFlow;
     data["temperature"] = 0.0;
     data["shotWeight"] = snap.shotWeight;
     data["waterPumped"] = snap.waterPumped;
@@ -624,6 +659,12 @@ static void initWebSocket() {
 static void startShot() {
   if (!phaseProfiler) return;
 
+  postShotBleedActive = false;
+  postShotBleedStartMs = 0;
+  postShotBleedReason = nullptr;
+  manualPurgeActive = false;
+  manualPurgeStartMs = 0;
+
   // Tare scale before we start the shot so weight/flow begin from ~0.
   tareScaleForShotStart();
   // Reset the exported state fields too (tareScaleForShotStart() can't reference currentState due to Arduino preprocessing order).
@@ -632,56 +673,63 @@ static void startShot() {
   currentState.weightFlow = 0.0f;
   currentState.smoothedWeightFlow = 0.0f;
 
+  // IMPORTANT: force pump OFF BEFORE we pulse the machine button.
+  // The optocoupler pulse blocks for ~250ms; if we were idling at refill power,
+  // we'd briefly pump at that power during GO.
+  setPumpToRawValue(0);
+
   // Physically start the machine brew (open valve, etc.)
   pulseMachineBrewButton();
   brewActive = true;
-  // IMPORTANT: force pump OFF immediately at GO so the purge actually happens,
-  // even if the loop hasn't run yet (and regardless of any idle pump behavior).
-  setPumpToRawValue(0);
 
   brewingStartedMs = millis();
-  profileActive = false;
-  profileStartedMs = 0;
+  profileActive = true;
+  profileStartedMs = brewingStartedMs;
+  lastShotTelemetryMs = 0;
+  phaseProfiler->resetWithCurrentState(currentState);
   pump.resetCounter();
   lastClicks = 0;
   lastClicksMs = 0;
   clicksPerSecond = 0.0f;
   currentState.waterPumped = 0.0f;
   pumpPowerPct = 0.0f;
-  wsLog("[shot] GO (purge started)");
+  wsLog("[shot] GO");
+  wsLog("[profile] START");
 }
 
-static void stopShot(const char* reason) {
+static void stopShotNow(const char* reason) {
+  // IMPORTANT: force pump OFF BEFORE we pulse the machine button.
+  // This prevents a brief jump to IDLE_PUMP_POWER_X10 while the optocoupler pulse blocks.
+  setPumpToRawValue(0);
+
+  postShotBleedActive = false;
+  postShotBleedStartMs = 0;
+  postShotBleedReason = nullptr;
+
   brewActive = false;
   profileActive = false;
   profileStartedMs = 0;
-  setPumpPowerX10(IDLE_PUMP_POWER_X10);
+  lastShotStopMs = millis();
   // Physically stop the machine brew
   pulseMachineBrewButton();
   wsLog(String("[shot] STOP (") + reason + ")");
 }
 
-static void maybeStartProfileAfterPrebleed(uint32_t nowMs) {
-  if (!brewActive || !phaseProfiler) return;
-  if (profileActive) return;
+static void requestStopShot(const char* reason) {
+  if (!brewActive) return;
+  if (postShotBleedActive) return;
 
-  // Keep pump OFF while we ghost-purge.
+  // End profile control immediately, but keep brew path open for a short
+  // "bleed" period with pump OFF before physically stopping the machine.
   setPumpToRawValue(0);
+  pumpPowerPct = 0.0f;
+  profileActive = false;
+  profileStartedMs = 0;
 
-  // IMPORTANT: don't trust the loop's captured nowMs here.
-  // GO can arrive mid-loop (via webSocket.loop()), updating brewingStartedMs to a time
-  // *after* the loop's nowMs, which would underflow this subtraction and end the purge instantly.
-  const uint32_t sinceGoMs = millis() - brewingStartedMs;
-  if (sinceGoMs < GHOST_PURGE_MS) return;
-
-  profileActive = true;
-  const uint32_t startMs = millis();
-  profileStartedMs = startMs;
-  // Start shot timer/recording AFTER ghost purge completes.
-  brewingStartedMs = startMs;
-  lastShotTelemetryMs = 0;
-  phaseProfiler->resetWithCurrentState(currentState);
-  wsLog("[profile] START (after ghost purge)");
+  postShotBleedActive = true;
+  postShotBleedStartMs = millis();
+  postShotBleedReason = reason;
+  wsLog(String("[shot] END (post-bleed ") + (POST_SHOT_BLEED_MS / 1000.0f) + "s, reason=" + reason + ")");
 }
 
 // ================== MACHINE BREW BUTTON (optocoupler pulse) ==================
@@ -693,6 +741,10 @@ static void pulseMachineBrewButton() {
   delay(250);
   digitalWrite(OUT_PIN, LOW);
   lastOptoPulseMs = millis();
+}
+
+static bool canPulseMachineBrewButton() {
+  return (millis() - lastOptoPulseMs) >= 700;
 }
 
 static void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
@@ -734,8 +786,20 @@ static void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_
         return;
       }
       if (cmd == "STOP") {
-        if (brewActive) stopShot("user");
+        if (brewActive) requestStopShot("user");
         else webSocket.sendTXT(num, "[shot] not active");
+        return;
+      }
+      if (cmd == "PURGE") {
+        if (brewActive) {
+          webSocket.sendTXT(num, "[purge] rejected (shot active)");
+          return;
+        }
+        setPumpToRawValue(0);
+        pulseMachineBrewButton();
+        manualPurgeActive = true;
+        manualPurgeStartMs = millis();
+        wsLog("[purge] start");
         return;
       }
       if (cmd == "STATUS") {
@@ -760,7 +824,7 @@ static void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_
         return;
       }
 
-      webSocket.sendTXT(num, "[ws] Unknown command. Use GO/STOP/STATUS/PING.");
+      webSocket.sendTXT(num, "[ws] Unknown command. Use GO/STOP/PURGE/STATUS/PING.");
       break;
     }
     default:
@@ -906,6 +970,9 @@ void loop() {
   );
   updatePressureChangeSpeed(nowMs);
 
+  // Update display-only smoothing used for telemetry.
+  updateTelemetrySmoothing();
+
   // Integrate water pumped (ml)
   static uint32_t lastIntegrateMs = 0;
   if (lastIntegrateMs != 0) {
@@ -922,8 +989,18 @@ void loop() {
     cmd.trim();
     cmd.toUpperCase();
     if (cmd == "GO") startShot();
-    else if (cmd == "STOP") stopShot("serial");
-    else if (cmd == "STATUS") {
+    else if (cmd == "STOP") requestStopShot("serial");
+    else if (cmd == "PURGE") {
+      if (brewActive) {
+        Serial.println("[purge] rejected (shot active)");
+      } else {
+        setPumpToRawValue(0);
+        pulseMachineBrewButton();
+        manualPurgeActive = true;
+        manualPurgeStartMs = millis();
+        wsLog("[purge] start");
+      }
+    } else if (cmd == "STATUS") {
       Serial.printf(
         "[status] brewActive=%d p=%.2fbar pumpFlow=%.2fml/s weight=%.2fg weightFlow=%.2fg/s clicks=%ld cps=%.1f power=%.1f%%\n",
         brewActive ? 1 : 0,
@@ -940,30 +1017,54 @@ void loop() {
 
   // Pump control
   // Run profile if active
-  if (brewActive && phaseProfiler) {
-    // Use fresh time here; GO can arrive mid-loop.
-    maybeStartProfileAfterPrebleed(millis());
+  if (brewActive && postShotBleedActive) {
+    setPumpToRawValue(0);
+    pumpPowerPct = 0.0f;
 
-    if (profileActive) {
-      // Use a fresh timestamp here too; profileStartedMs can be set mid-loop in maybeStartProfileAfterPrebleed().
-      const uint32_t profileTimeInShot = millis() - profileStartedMs;
-      phaseProfiler->updatePhase(profileTimeInShot, currentState);
+    const uint32_t sinceBleedStartMs = millis() - postShotBleedStartMs;
+    if (sinceBleedStartMs >= POST_SHOT_BLEED_MS) {
+      stopShotNow(postShotBleedReason ? postShotBleedReason : "done");
+    }
+  } else if (brewActive && phaseProfiler && profileActive) {
+    const uint32_t profileTimeInShot = millis() - profileStartedMs;
+    phaseProfiler->updatePhase(profileTimeInShot, currentState);
 
-      if (phaseProfiler->isFinished()) {
-        stopShot("profile_finished");
-      } else {
-        CurrentPhase& cp = phaseProfiler->getCurrentPhase();
-        if (cp.getType() == PHASE_TYPE::PHASE_TYPE_PRESSURE) {
-          setPumpPressure(cp.getTarget(), cp.getRestriction(), currentState);
-        } else {
-          setPumpFlow(cp.getTarget(), cp.getRestriction(), currentState);
-        }
-      }
+    if (phaseProfiler->isFinished()) {
+      requestStopShot("profile_finished");
     } else {
-      // Pre-bleed: pump is held off above; do not advance profile timers.
+      CurrentPhase& cp = phaseProfiler->getCurrentPhase();
+      if (cp.getType() == PHASE_TYPE::PHASE_TYPE_PRESSURE) {
+        setPumpPressure(cp.getTarget(), cp.getRestriction(), currentState);
+      } else {
+        setPumpFlow(cp.getTarget(), cp.getRestriction(), currentState);
+      }
     }
   } else {
-    setPumpPowerX10(IDLE_PUMP_POWER_X10);
+    // Not brewing: handle manual purge in progress or normal idle.
+    if (manualPurgeActive) {
+      setPumpToRawValue(0);
+      pumpPowerPct = 0.0f;
+      const uint32_t sincePurgeStartMs = millis() - manualPurgeStartMs;
+      if (sincePurgeStartMs >= MANUAL_PURGE_DURATION_MS && canPulseMachineBrewButton()) {
+        pulseMachineBrewButton();
+        manualPurgeActive = false;
+        wsLog("[purge] done");
+      }
+    } else {
+      // Normal idle/refill behavior.
+      // Idle/refill power is optional. After STOP, delay re-applying it to avoid
+      // a visible power spike at the end of a shot.
+      if (IDLE_PUMP_POWER_X10 > 0) {
+        const uint32_t sinceStop = (lastShotStopMs == 0) ? 0 : (millis() - lastShotStopMs);
+        if (lastShotStopMs != 0 && sinceStop < IDLE_REFILL_DELAY_AFTER_STOP_MS) {
+          setPumpToRawValue(0);
+        } else {
+          setPumpPowerX10(IDLE_PUMP_POWER_X10);
+        }
+      } else {
+        setPumpToRawValue(0);
+      }
+    }
   }
 
   // Use fresh time; GO/profile start can happen mid-loop.
