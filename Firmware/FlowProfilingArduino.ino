@@ -26,6 +26,7 @@
 #include <AcaiaArduinoBLE.h>
 
 #include "profiling_phases.h"
+#include "profile_storage.h"
 
 // ================== WIFI / WEBSOCKET ==================
 #define WIFI_SSID "Kenyon19"
@@ -797,8 +798,13 @@ void setup() {
   delay(100);
   scale.tare();
 
-  // Parse profile JSON and create PhaseProfiler AFTER phases exist.
-  if (!parseProfileFromJson(profile, PROFILE_JSON)) {
+  // Load profiles from NVS (or defaults), then apply active profile.
+  profilesStorageInit();
+  static char profileJsonBuf[PROFILE_JSON_MAX_SIZE];
+  const uint8_t activeIdx = profilesStorageGetActiveIndex();
+  const bool hasStored = profilesStorageGetSlotJson(activeIdx, profileJsonBuf, sizeof(profileJsonBuf));
+  const char* jsonToLoad = hasStored ? profileJsonBuf : PROFILE_JSON;
+  if (!parseProfileFromJson(profile, jsonToLoad)) {
     wsLog("[profile] parse failed; sketch will run but GO will do nothing");
   } else {
     phaseProfiler = new PhaseProfiler(profile);
