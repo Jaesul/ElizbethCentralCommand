@@ -8,9 +8,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define MAX_PROFILES 5
+#define MAX_PROFILES 10
 #define PROFILE_NAME_LENGTH 25
-#define PROFILES_SCHEMA_VERSION 2
+#define PROFILES_SCHEMA_VERSION 3
 #define PROFILE_JSON_MAX_SIZE 1536
 
 #define PROFILES_NVS_NAMESPACE "profiles"
@@ -38,13 +38,14 @@ bool profilesStorageGetSlotJson(uint8_t index, char* buf, size_t bufSize);
 
 /**
  * Write a profile JSON string to a slot and persist to NVS.
- * Returns true on success.
+ * Returns true on success. Rejects index >= MAX_PROFILES (no 11th slot).
  */
 bool profilesStorageWriteSlot(uint8_t index, const char* json);
 
 /**
  * Set the active profile index and persist to NVS.
  * Does not load the profile into runtime; caller must apply if needed.
+ * Rejects index >= MAX_PROFILES (no 11th slot).
  */
 void profilesStorageSetActive(uint8_t index);
 

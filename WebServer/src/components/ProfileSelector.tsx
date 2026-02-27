@@ -18,6 +18,10 @@ interface ProfileSelectorProps {
   onStartShot?: (profileId: string) => void;
   isConnected?: boolean;
   isBrewing?: boolean;
+  /** When true, hide Edit and Delete buttons (e.g. for device-sourced profiles). */
+  readOnly?: boolean;
+  /** When provided, Edit button calls this with the profile (e.g. open new page with profile pre-loaded). */
+  onEditProfile?: (profile: PhaseProfile) => void;
 }
 
 export function ProfileSelector({
@@ -28,6 +32,8 @@ export function ProfileSelector({
   onStartShot,
   isConnected = false,
   isBrewing = false,
+  readOnly = false,
+  onEditProfile,
 }: ProfileSelectorProps) {
   const router = useRouter();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -60,10 +66,14 @@ export function ProfileSelector({
           <CardTitle>Profiles</CardTitle>
         </CardHeader>
         <CardContent>
-          <Button onClick={() => router.push("/profiles/new")} className="w-full">
-            <Plus className="mr-2 h-4 w-4" />
-            Create First Profile
-          </Button>
+          {readOnly ? (
+            <p className="text-sm text-muted-foreground">No profiles saved on device.</p>
+          ) : (
+            <Button onClick={() => router.push("/profiles/new")} className="w-full">
+              <Plus className="mr-2 h-4 w-4" />
+              Create First Profile
+            </Button>
+          )}
         </CardContent>
       </Card>
     );
@@ -74,10 +84,12 @@ export function ProfileSelector({
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle>Shot Profiles</CardTitle>
-          <Button onClick={() => router.push("/profiles/new")} size="sm" variant="outline">
-            <Plus className="mr-2 h-4 w-4" />
-            New Profile
-          </Button>
+          {!readOnly && (
+            <Button onClick={() => router.push("/profiles/new")} size="sm" variant="outline">
+              <Plus className="mr-2 h-4 w-4" />
+              New Profile
+            </Button>
+          )}
         </div>
       </CardHeader>
       <CardContent>
@@ -142,26 +154,34 @@ export function ProfileSelector({
                           )}
                         </div>
                         <div className="flex gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              router.push(`/profiles/${profile.id}`);
-                            }}
-                          >
-                            <Edit className="h-3 w-3" />
-                          </Button>
-                          {profiles.length > 1 && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 text-destructive hover:text-destructive"
-                              onClick={(e) => handleDelete(profile.id, e)}
-                            >
-                              <Trash2 className="h-3 w-3" />
-                            </Button>
+                          {(!readOnly || onEditProfile) && (
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 cursor-pointer"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (onEditProfile) {
+                                    onEditProfile(profile);
+                                  } else {
+                                    router.push(`/profiles/${profile.id}`);
+                                  }
+                                }}
+                              >
+                                <Edit className="h-3 w-3" />
+                              </Button>
+                              {!readOnly && profiles.length > 1 && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6 text-destructive hover:text-destructive"
+                                  onClick={(e) => handleDelete(profile.id, e)}
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </Button>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>
@@ -207,7 +227,7 @@ export function ProfileSelector({
                           Brew
                         </Button>
                       )}
-                      {showDeleteConfirm === profile.id && (
+                      {showDeleteConfirm === profile.id && !readOnly && (
                         <div className="mt-2 p-2 bg-destructive/10 border border-destructive rounded text-xs">
                           <div className="mb-1 text-destructive font-medium">
                             Delete this profile?

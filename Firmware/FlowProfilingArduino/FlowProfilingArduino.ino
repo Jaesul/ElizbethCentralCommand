@@ -850,7 +850,7 @@ static void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_
         return;
       }
       if (cmd == "WRITE_PROFILE") {
-        // Payload must be JSON: { "command": "WRITE_PROFILE", "index": 0..4, "profile": "<string>" }
+        // Payload must be JSON: { "command": "WRITE_PROFILE", "index": 0..9, "profile": "<string>" }
         if (!cmdRaw.startsWith("{")) {
           webSocket.sendTXT(num, "[profile] write failed: WRITE_PROFILE requires JSON payload");
           wsLog("[profile] write failed: WRITE_PROFILE requires JSON payload");
@@ -878,8 +878,9 @@ static void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_
         }
         size_t plen = strlen(profileStr);
         if (idx < 0 || idx >= (int)MAX_PROFILES) {
-          webSocket.sendTXT(num, "[profile] write failed: invalid index");
-          wsLog("[profile] write failed: invalid index");
+          String errMsg = "[profile] write failed: invalid index (use 0.." + String((int)MAX_PROFILES - 1) + ")";
+          webSocket.sendTXT(num, errMsg);
+          wsLog(errMsg);
           return;
         }
         if (plen >= PROFILE_JSON_MAX_SIZE) {

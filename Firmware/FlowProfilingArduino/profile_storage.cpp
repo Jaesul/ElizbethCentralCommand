@@ -1,9 +1,13 @@
 /**
  * Profile storage implementation using ESP32 Preferences (NVS).
+ * Valid profile index is 0 .. MAX_PROFILES-1; requests for index >= MAX_PROFILES are rejected.
  */
 #include "profile_storage.h"
 #include <Preferences.h>
 #include <Arduino.h>
+
+// NVS slot keys are "0".."9"; if MAX_PROFILES > 10 the key format must change
+static_assert(MAX_PROFILES <= 10, "slot keys are single-digit; update key format if MAX_PROFILES > 10");
 
 static uint8_t s_activeIndex = 0;
 
@@ -22,13 +26,14 @@ static const char DEFAULT_SLOT3_JSON[] = R"json({"name":"Allonge","phases":[{"ty
 // Slot 4: Classic Italian – ramp to 9 bar, hold, then decline (lever-style)
 static const char DEFAULT_SLOT4_JSON[] = R"json({"name":"Classic Italian","phases":[{"type":"PRESSURE","target":{"start":0,"end":9.0,"curve":"LINEAR","time":5000},"restriction":9.0,"stopConditions":{"time":15000}},{"type":"PRESSURE","target":{"start":9.0,"end":5.0,"curve":"EASE_OUT","time":8000},"restriction":9.0,"stopConditions":{"weight":42.0}}],"globalStopConditions":{"weight":40.0}})json";
 
-static const char* const DEFAULT_SLOT_JSONS[MAX_PROFILES] = {
+static const char* const DEFAULT_SLOT_JSONS[] = {
   DEFAULT_SLOT0_JSON,
   DEFAULT_SLOT1_JSON,
   DEFAULT_SLOT2_JSON,
   DEFAULT_SLOT3_JSON,
   DEFAULT_SLOT4_JSON,
 };
+static constexpr uint8_t NUM_DEFAULT_SLOTS = sizeof(DEFAULT_SLOT_JSONS) / sizeof(DEFAULT_SLOT_JSONS[0]);
 
 static void writeDefaultsToNVS(Preferences& prefs) {
   prefs.putUChar(PROFILES_NVS_KEY_VER, PROFILES_SCHEMA_VERSION);
@@ -37,7 +42,10 @@ static void writeDefaultsToNVS(Preferences& prefs) {
 
   for (uint8_t i = 0; i < MAX_PROFILES; i++) {
     char key[2] = { (char)('0' + i), '\0' };
-    prefs.putString(key, String(DEFAULT_SLOT_JSONS[i]));
+    if (i < NUM_DEFAULT_SLOTS) {
+      prefs.putString(key, String(DEFAULT_SLOT_JSONS[i]));
+    }
+    // Slots 5..9 left unwritten (empty) so user can fill them later
   }
 }
 

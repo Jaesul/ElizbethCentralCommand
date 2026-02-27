@@ -1,137 +1,162 @@
 "use client";
 
-import { useRef } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Edit, ChevronLeft, ChevronRight } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import { Plus } from "lucide-react";
+import { Card, CardContent } from "~/components/ui/card";
+import { Skeleton } from "~/components/ui/skeleton";
 import { Button } from "~/components/ui/button";
-import { PhaseProfileGraph } from "~/components/PhaseProfileGraph";
-import { useProfiles } from "~/hooks/useProfiles";
-import { calculatePhaseProfileDuration } from "~/lib/profileUtils";
+import { ProfileSelector } from "~/components/ProfileSelector";
+import { useFlowProfilingWebSocket } from "~/hooks/useFlowProfilingWebSocket";
+import { normalizeProfileForGraph } from "~/lib/profileUtils";
 import type { PhaseProfile } from "~/types/profiles";
 
-function PhaseSummary({ profile }: { profile: PhaseProfile }) {
-  const totalSec = calculatePhaseProfileDuration(profile);
-  const stopWeight = profile.globalStopConditions.weight;
-  return (
-    <div className="space-y-1.5 border-t pt-2 text-sm text-muted-foreground">
-      <div className="flex justify-between">
-        <span>Phases:</span>
-        <span className="font-medium text-foreground">{profile.phases.length}</span>
-      </div>
-      {stopWeight != null && (
-        <div className="flex justify-between">
-          <span>Stop:</span>
-          <span className="font-medium text-foreground">at {stopWeight}g</span>
-        </div>
-      )}
-      <div className="flex justify-between border-t pt-1">
-        <span>Est. total:</span>
-        <span className="font-medium text-foreground">{totalSec.toFixed(1)}s</span>
-      </div>
-    </div>
-  );
-}
+const getFlowWebSocketUrl = () => {
+  const customUrl = process.env.NEXT_PUBLIC_FLOW_WS_URL;
+  if (customUrl) return customUrl;
+  return "ws://shotstopper-ws.local:81";
+};
 
 export function ProfilesHomePage() {
   const router = useRouter();
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const { profiles, isLoaded } = useProfiles();
+  const [flowWsUrl, setFlowWsUrl] = useState("");
 
-  const scroll = (direction: "left" | "right") => {
-    if (!scrollContainerRef.current) return;
-    const container = scrollContainerRef.current;
-    const scrollAmount = 380;
-    container.scrollBy({
-      left: direction === "left" ? -scrollAmount : scrollAmount,
-      behavior: "smooth",
-    });
-  };
+  useEffect(() => {
+    setFlowWsUrl(getFlowWebSocketUrl());
+  }, []);
 
-  if (!isLoaded) {
-    return (
-      <div className="container mx-auto max-w-6xl px-4 py-8">
-        <p className="text-muted-foreground">Loading profiles…</p>
-      </div>
-    );
-  }
+  const {
+    isConnected: flowConnected,
+    deviceProfiles: flowDeviceProfiles,
+    sendRaw: flowSendRaw,
+    sendCommand: flowSendCommand,
+  } = useFlowProfilingWebSocket({
+    url: flowWsUrl,
+    reconnectInterval: 5000,
+    reconnectOnClose: true,
+    maxLogs: 200,
+    requestProfileOnConnect: true,
+  });
+
+  const deviceProfilesAsPhaseProfiles: PhaseProfile[] = useMemo(() => {
+    if (!flowDeviceProfiles?.slots?.length) return [];
+    const result: PhaseProfile[] = [];
+    for (const slot of flowDeviceProfiles.slots) {
+      if (!slot.profile?.trim()) continue;
+      try {
+        const raw = JSON.parse(slot.profile) as Parameters<typeof normalizeProfileForGraph>[0];
+        if (!raw?.phases?.length) continue;
+        result.push(
+          normalizeProfileForGraph({
+            ...raw,
+            id: `device-slot-${slot.index}`,
+            name: slot.name || raw.name || `Slot ${slot.index}`,
+          })
+        );
+      } catch {
+        // skip invalid JSON
+      }
+    }
+    return result;
+  }, [flowDeviceProfiles]);
+
+  const activeDeviceProfileId: string | null =
+    flowDeviceProfiles == null ? null : `device-slot-${flowDeviceProfiles.active}`;
+
+  const handleDeviceSelectProfile = useCallback(
+    (profileId: string) => {
+      const match = /^device-slot-(\d+)$/.exec(profileId);
+      if (match) {
+        const index = parseInt(match[1]!, 10);
+        flowSendRaw(`SET_ACTIVE ${index}`);
+      }
+    },
+    [flowSendRaw]
+  );
+
+  const handleDeviceStartShot = useCallback(
+    (_profileId: string) => {
+      flowSendCommand("GO");
+    },
+    [flowSendCommand]
+  );
+
+  const handleEditDeviceProfile = useCallback(
+    (profile: PhaseProfile) => {
+      sessionStorage.setItem("elizbeth-profile-edit-initial", JSON.stringify(profile));
+      router.push("/profiles/new");
+    },
+    [router]
+  );
 
   return (
     <div className="container mx-auto max-w-6xl px-4 py-8">
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle>Shot Profiles</CardTitle>
-            <Button onClick={() => router.push("/profiles/new")} size="sm" variant="outline">
-              <Plus className="mr-2 h-4 w-4" />
-              New Profile
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {profiles.length === 0 ? (
-            <Button onClick={() => router.push("/profiles/new")} className="w-full">
-              <Plus className="mr-2 h-4 w-4" />
-              Create First Profile
-            </Button>
-          ) : (
-            <div className="relative">
-              <Button
-                variant="outline"
-                size="icon"
-                className="absolute left-0 top-1/2 z-10 h-8 w-8 -translate-y-1/2 bg-background/80 backdrop-blur-sm"
-                onClick={() => scroll("left")}
-                aria-label="Scroll left"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-
-              <div
-                ref={scrollContainerRef}
-                className="flex cursor-default gap-6 overflow-x-auto px-10 py-8 [&::-webkit-scrollbar]:hidden"
-                style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
-              >
-                {profiles.map((profile) => (
-                  <div key={profile.id} className="w-[370px] shrink-0">
-                    <Card className="h-full border hover:border-primary/50">
-                      <CardHeader className="pb-2">
-                        <div className="flex items-start justify-between">
-                          <CardTitle className="text-lg">{profile.name}</CardTitle>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6"
-                            onClick={() => router.push(`/profiles/${profile.id}`)}
-                            aria-label={`Edit ${profile.name}`}
-                          >
-                            <Edit className="h-3 w-3" />
-                          </Button>
-                        </div>
-                      </CardHeader>
-                      <CardContent className="space-y-4 pt-0">
-                        <div>
-                          <PhaseProfileGraph profile={profile} height={180} inline />
-                        </div>
-                        <PhaseSummary profile={profile} />
-                      </CardContent>
-                    </Card>
+      {/* Device profiles carousel (ESP saved profiles + active) */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-semibold">Profiles on device</h2>
+          <Button onClick={() => router.push("/profiles/new")} size="sm" variant="outline">
+            <Plus className="mr-2 h-4 w-4" />
+            New Profile
+          </Button>
+        </div>
+        {!flowConnected ? (
+          <div className="flex gap-6 overflow-x-auto px-1 py-2 [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: "none" }}>
+            {[1, 2, 3].map((i) => (
+              <Card key={i} className="h-full w-[370px] shrink-0 border">
+                <CardContent className="p-4 pt-4">
+                  <div className="space-y-4">
+                    <Skeleton className="h-6 w-32" />
+                    <Skeleton className="h-[180px] w-full rounded-md" />
+                    <div className="space-y-2 border-t pt-3">
+                      <Skeleton className="h-4 w-full max-w-[80%]" />
+                      <Skeleton className="h-4 w-full max-w-[60%]" />
+                      <Skeleton className="h-4 w-full max-w-[70%]" />
+                    </div>
+                    <Skeleton className="h-9 w-full rounded-md" />
                   </div>
-                ))}
-              </div>
-
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : !flowDeviceProfiles ? (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-12">
+              <p className="text-sm text-muted-foreground">
+                Click &quot;Send PROFILES&quot; to load profiles from the device.
+              </p>
               <Button
                 variant="outline"
-                size="icon"
-                className="absolute right-0 top-1/2 z-10 h-8 w-8 -translate-y-1/2 bg-background/80 backdrop-blur-sm"
-                onClick={() => scroll("right")}
-                aria-label="Scroll right"
+                size="sm"
+                className="mt-3"
+                onClick={() => flowSendRaw("PROFILES")}
               >
-                <ChevronRight className="h-4 w-4" />
+                Send PROFILES
               </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
+        ) : deviceProfilesAsPhaseProfiles.length === 0 ? (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-12">
+              <p className="text-sm text-muted-foreground">
+                No profiles saved on device.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <ProfileSelector
+            profiles={deviceProfilesAsPhaseProfiles}
+            selectedProfileId={activeDeviceProfileId}
+            onSelectProfile={handleDeviceSelectProfile}
+            onDeleteProfile={() => {}}
+            onStartShot={handleDeviceStartShot}
+            onEditProfile={handleEditDeviceProfile}
+            isConnected={flowConnected}
+            isBrewing={false}
+            readOnly
+          />
+        )}
+      </div>
     </div>
   );
 }

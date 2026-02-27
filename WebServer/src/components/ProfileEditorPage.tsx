@@ -626,6 +626,32 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
         router.push("/");
       }
     } else {
+      try {
+        const raw = typeof window !== "undefined" && sessionStorage.getItem("elizbeth-profile-edit-initial");
+        if (raw) {
+          const data = JSON.parse(raw) as { name?: string; phases?: Phase[]; globalStopConditions?: GlobalStopConditions };
+          if (
+            data &&
+            typeof data.name === "string" &&
+            Array.isArray(data.phases) &&
+            data.phases.length > 0 &&
+            data.globalStopConditions &&
+            typeof data.globalStopConditions === "object"
+          ) {
+            const loadedPhases = data.phases.map((ph) => ({ ...ph }));
+            setName(data.name);
+            setPhases(loadedPhases);
+            setCommandedPhases(loadedPhases.map((ph) => ({ ...ph })));
+            setGlobalStop({ ...data.globalStopConditions });
+            setSelectedStepIndex(0);
+            sessionStorage.removeItem("elizbeth-profile-edit-initial");
+            return;
+          }
+        }
+      } catch {
+        // ignore parse errors
+      }
+      sessionStorage.removeItem("elizbeth-profile-edit-initial");
       const initial = [{ ...defaultPhase }];
       setName("");
       setPhases(initial);
