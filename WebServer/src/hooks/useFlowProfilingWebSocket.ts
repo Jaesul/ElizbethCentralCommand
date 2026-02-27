@@ -39,6 +39,17 @@ export interface FlowLogData {
   log?: string;
 }
 
+/** Response from device PROFILES command: active index + slots with full profile JSON */
+export interface DeviceProfilesPayload {
+  active: number;
+  slots: Array<{
+    index: number;
+    name: string;
+    profile: string;
+    isActive: boolean;
+  }>;
+}
+
 export interface UseFlowProfilingWebSocketOptions {
   url: string;
   reconnectInterval?: number;
@@ -57,6 +68,8 @@ export interface UseFlowProfilingWebSocketReturn {
   shot: FlowShotData | null;
   /** Current profile from ESP (raw JSON), e.g. after sending PROFILES or from STATUS */
   espProfile: Record<string, unknown> | null;
+  /** Response from PROFILES command (active index + slots with full profile JSON); null until first PROFILES reply */
+  deviceProfiles: DeviceProfilesPayload | null;
   logs: string[];
   rawJson: string[];
   reconnect: () => void;
@@ -78,6 +91,7 @@ export function useFlowProfilingWebSocket({
   const [sensor, setSensor] = useState<FlowSensorData | null>(null);
   const [shot, setShot] = useState<FlowShotData | null>(null);
   const [espProfile, setEspProfile] = useState<Record<string, unknown> | null>(null);
+  const [deviceProfiles, setDeviceProfiles] = useState<DeviceProfilesPayload | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [rawJson, setRawJson] = useState<string[]>([]);
 
@@ -215,6 +229,30 @@ export function useFlowProfilingWebSocket({
           return;
         }
 
+        // PROFILES response: { "active": number, "slots": [ { index, name, profile, isActive }, ... ] }
+        const asRecord = msg as Record<string, unknown>;
+        if (
+          typeof asRecord?.active === "number" &&
+          Array.isArray(asRecord.slots) &&
+          asRecord.slots.length > 0
+        ) {
+          console.log("[FlowProfiling] PROFILES raw response", raw);
+          console.log("[FlowProfiling] PROFILES parsed", msg);
+          const slots = asRecord.slots as Array<Record<string, unknown>>;
+          const payload: DeviceProfilesPayload = {
+            active: asRecord.active as number,
+            slots: slots.map((s) => ({
+              index: (s.index as number) ?? 0,
+              name: (typeof s.name === "string" ? s.name : "") as string,
+              profile: (typeof s.profile === "string" ? s.profile : "") as string,
+              isActive: Boolean(s.isActive),
+            })),
+          };
+          setDeviceProfiles(payload);
+          pushLog("[rx] PROFILES");
+          return;
+        }
+
         // Profile from ESP (e.g. response to PROFILES or STATUS)
         if (action === "profile") {
           if (setProfileFromMessage(msg?.data ?? msg)) return;
@@ -307,6 +345,7 @@ export function useFlowProfilingWebSocket({
     sensor,
     shot,
     espProfile,
+    deviceProfiles,
     logs,
     rawJson,
     reconnect,

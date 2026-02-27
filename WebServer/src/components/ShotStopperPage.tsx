@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { FloatingConnectionIcon } from "~/components/FloatingConnectionIcon";
 import { ProfileSelector } from "~/components/ProfileSelector";
 import { ShotMonitoringDrawer } from "~/components/ShotMonitoringDrawer";
@@ -19,6 +19,9 @@ import type { ShotStopperData } from "~/types/shotstopper";
 import { Button } from "~/components/ui/button";
 import { useFlowShotHistory } from "~/hooks/useFlowShotHistory";
 import { FlowShotChart } from "~/components/FlowShotChart";
+import { PhaseProfileGraph } from "~/components/PhaseProfileGraph";
+import { normalizeProfileForGraph } from "~/lib/profileUtils";
+import type { PhaseProfile } from "~/types/profiles";
 
 // Determine WebSocket URL - ESP32 is now the WebSocket server via mDNS
 const getWebSocketUrl = () => {
@@ -105,6 +108,7 @@ export function ShotStopperPage({
     shot: flowShot,
     logs: flowLogs,
     rawJson: flowRawJson,
+    deviceProfiles: flowDeviceProfiles,
     sendCommand: flowSendCommand,
     sendRaw: flowSendRaw,
     reconnect: flowReconnect,
@@ -112,6 +116,43 @@ export function ShotStopperPage({
   const { points: flowPoints, phaseMarkers: flowPhaseMarkers, isActive: flowShotActive } = useFlowShotHistory(flowSensor, flowShot);
   const [flowLogCopyStatus, setFlowLogCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [flowCsvCopyStatus, setFlowCsvCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+
+  // Parse active device profile for graph (from PROFILES response)
+  const activeDeviceProfile: PhaseProfile | null = useMemo(() => {
+    if (!flowDeviceProfiles?.slots?.length) return null;
+    // Prefer slot whose index matches device active; then isActive flag; then array position
+    const activeSlot =
+      flowDeviceProfiles.slots.find((s) => s.index === flowDeviceProfiles.active) ??
+      flowDeviceProfiles.slots.find((s) => s.isActive) ??
+      flowDeviceProfiles.slots[flowDeviceProfiles.active];
+    if (!activeSlot?.profile) return null;
+    try {
+      const raw = JSON.parse(activeSlot.profile) as Parameters<typeof normalizeProfileForGraph>[0];
+      if (!raw?.phases?.length) return null;
+      return normalizeProfileForGraph({
+        ...raw,
+        id: `device-slot-${activeSlot.index}`,
+        name: activeSlot.name || raw.name || `Slot ${activeSlot.index}`,
+      });
+    } catch {
+      return null;
+    }
+  }, [flowDeviceProfiles]);
+
+  // Debug: log current profile selection so we can verify we're showing the active profile
+  useEffect(() => {
+    if (!flowDeviceProfiles) return;
+    const activeSlot =
+      flowDeviceProfiles.slots.find((s) => s.index === flowDeviceProfiles.active) ??
+      flowDeviceProfiles.slots.find((s) => s.isActive) ??
+      flowDeviceProfiles.slots[flowDeviceProfiles.active];
+    console.log("[ShotStopper] deviceProfiles", {
+      activeIndex: flowDeviceProfiles.active,
+      slots: flowDeviceProfiles.slots.map((s) => ({ index: s.index, name: s.name, isActive: s.isActive })),
+      chosenSlot: activeSlot ? { index: activeSlot.index, name: activeSlot.name, isActive: activeSlot.isActive } : null,
+      activeDeviceProfileName: activeDeviceProfile?.name ?? null,
+    });
+  }, [flowDeviceProfiles, activeDeviceProfile?.name]);
 
   const buildPressureCsv = () => {
     // Minimal export: time + actual pressure + target pressure (like gaggiuino fields).
@@ -416,6 +457,26 @@ export function ShotStopperPage({
                 Send STATUS
               </Button>
               <span className="text-xs text-muted-foreground">Replies appear in Device log below.</span>
+            </div>
+
+            {/* Active profile graph (device) */}
+            <div className="space-y-2">
+              <div className="text-sm font-medium">Active profile (device)</div>
+              {activeDeviceProfile ? (
+                <>
+                  <PhaseProfileGraph profile={activeDeviceProfile} height={220} inline />
+                  <div className="rounded-md border bg-muted/30 p-3">
+                    <div className="mb-1 text-xs font-medium text-muted-foreground">Profile (steps / phases)</div>
+                    <pre className="max-h-64 overflow-auto text-xs font-mono whitespace-pre-wrap break-words">
+                      {JSON.stringify(activeDeviceProfile, null, 2)}
+                    </pre>
+                  </div>
+                </>
+              ) : (
+                <div className="flex h-[220px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
+                  {flowConnected ? "Click “Send PROFILES” to load the active profile." : "Connect to device, then send PROFILES."}
+                </div>
+              )}
             </div>
 
             <div className="rounded-md border p-3 bg-muted/30 max-h-48 overflow-auto text-xs font-mono whitespace-pre-wrap">
