@@ -786,13 +786,16 @@ static void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_
         return;
       }
       if (cmd == "PROFILES") {
-        StaticJsonDocument<512> doc;
-        doc["active"] = (int)profilesStorageGetActiveIndex();
+        const uint8_t activeIdx = profilesStorageGetActiveIndex();
+        DynamicJsonDocument doc(10240);
+        doc["active"] = (int)activeIdx;
         JsonArray slots = doc.createNestedArray("slots");
         for (uint8_t i = 0; i < MAX_PROFILES; i++) {
           JsonObject slot = slots.add<JsonObject>();
           slot["index"] = (int)i;
+          slot["isActive"] = (i == activeIdx);
           if (profilesStorageGetSlotJson(i, profileJsonBuf, sizeof(profileJsonBuf))) {
+            slot["profile"] = profileJsonBuf;
             StaticJsonDocument<256> slotDoc;
             if (!deserializeJson(slotDoc, profileJsonBuf)) {
               if (slotDoc.containsKey("name") && slotDoc["name"].is<const char*>())
@@ -804,6 +807,7 @@ static void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_
             }
           } else {
             slot["name"] = "";
+            slot["profile"] = "";
           }
         }
         String out;
@@ -1054,13 +1058,16 @@ void loop() {
       );
     }
     else if (cmdUpper == "PROFILES") {
-      StaticJsonDocument<512> doc;
-      doc["active"] = (int)profilesStorageGetActiveIndex();
+      const uint8_t activeIdx = profilesStorageGetActiveIndex();
+      DynamicJsonDocument doc(10240);
+      doc["active"] = (int)activeIdx;
       JsonArray slots = doc.createNestedArray("slots");
       for (uint8_t i = 0; i < MAX_PROFILES; i++) {
         JsonObject slot = slots.add<JsonObject>();
         slot["index"] = (int)i;
+        slot["isActive"] = (i == activeIdx);
         if (profilesStorageGetSlotJson(i, profileJsonBuf, sizeof(profileJsonBuf))) {
+          slot["profile"] = profileJsonBuf;
           StaticJsonDocument<256> slotDoc;
           if (!deserializeJson(slotDoc, profileJsonBuf)) {
             if (slotDoc.containsKey("name") && slotDoc["name"].is<const char*>())
@@ -1072,6 +1079,7 @@ void loop() {
           }
         } else {
           slot["name"] = "";
+          slot["profile"] = "";
         }
       }
       String out;
