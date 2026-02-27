@@ -94,6 +94,7 @@ export function ShotStopperPage() {
     logs: flowLogs,
     rawJson: flowRawJson,
     sendCommand: flowSendCommand,
+    sendRaw: flowSendRaw,
     reconnect: flowReconnect,
   } = useFlowProfilingWebSocket({
     url: isTestingMode ? "" : flowWsUrl,
@@ -401,6 +402,16 @@ export function ShotStopperPage() {
               WS: <code>{flowWsUrl}</code> (override with <code>NEXT_PUBLIC_FLOW_WS_URL</code>)
             </div>
 
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => flowSendRaw("PROFILES")} disabled={!flowConnected}>
+                Send PROFILES
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => flowSendRaw("STATUS")} disabled={!flowConnected}>
+                Send STATUS
+              </Button>
+              <span className="text-xs text-muted-foreground">Replies appear in Device log below.</span>
+            </div>
+
             <div className="rounded-md border p-3 bg-muted/30 max-h-48 overflow-auto text-xs font-mono whitespace-pre-wrap">
               {(flowLogs.slice(-30).join("\n") || "[no logs yet]")}
             </div>
@@ -408,7 +419,7 @@ export function ShotStopperPage() {
             {/* Copy/paste-friendly log panel */}
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-medium">Logs (copy/paste)</div>
+                <div className="text-sm font-medium">Device log</div>
                 <div className="flex items-center gap-2">
                   {flowLogCopyStatus === "copied" && (
                     <span className="text-xs text-muted-foreground">Copied</span>
@@ -432,7 +443,7 @@ export function ShotStopperPage() {
                 value={(flowLogs.length ? flowLogs.join("\n") : "[no logs yet]")}
               />
               <div className="text-xs text-muted-foreground">
-                Tip: Copy logs right after a shot finishes so we can interpret phase-by-phase behavior together.
+                Command replies and device broadcast logs (with timestamps). Use for debugging without Serial.
               </div>
             </div>
 
@@ -533,53 +544,6 @@ export function ShotStopperPage() {
         </Card>
       )}
 
-
-      {/* Profile Selector - Front and center */}
-      {profilesLoaded && (
-        <div>
-          <ProfileSelector
-            profiles={profiles}
-            selectedProfileId={selectedProfileId}
-            onSelectProfile={selectProfile}
-            onDeleteProfile={deleteProfile}
-                  onStartShot={handleStartShot}
-            isConnected={isConnected}
-            isBrewing={shotData?.brewing ?? false}
-          />
-        </div>
-      )}
-
-      {/* Floating Connection Status Icon */}
-      <FloatingConnectionIcon
-        isConnected={isConnected}
-        error={error}
-        onReconnect={handleReconnect}
-        lastMessageTime={lastMessageTime}
-        isTestingMode={isTestingMode}
-      />
-
-      {/* Shot Monitoring Drawer */}
-      <Drawer 
-        open={monitoringDrawerOpen} 
-        onOpenChange={(open) => {
-          setMonitoringDrawerOpen(open);
-        }}
-      >
-        <ShotMonitoringDrawer
-          open={monitoringDrawerOpen}
-          onOpenChange={setMonitoringDrawerOpen}
-          shotData={shotData}
-          shotHistory={mergedShotHistoryForDrawer}
-          currentPressure={
-            shotData?.currentPressure ??
-            shotData?.pressureBar
-          }
-          isBrewing={shotData?.brewing ?? false}
-          onStartShot={() => handleStartShot(selectedProfileId ?? "")}
-          onStopShot={handleStopShot}
-          isConnected={isConnected}
-        />
-      </Drawer>
     </div>
   );
 }

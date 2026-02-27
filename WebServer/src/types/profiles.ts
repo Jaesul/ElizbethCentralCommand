@@ -39,6 +39,70 @@ export interface PressureDataPoint {
   stage?: string; // Stage name for reference
 }
 
+// Phase-based profile (firmware-aligned)
+export type TransitionCurve =
+  | "INSTANT"
+  | "LINEAR"
+  | "EASE_IN"
+  | "EASE_OUT"
+  | "EASE_IN_OUT";
+
+export interface PhaseTarget {
+  start?: number;
+  end: number;
+  curve: TransitionCurve;
+  time: number; // seconds (transition duration)
+}
+
+export interface PhaseStopConditions {
+  time?: number; // seconds
+  pressureAbove?: number;
+  pressureBelow?: number;
+  flowAbove?: number;
+  flowBelow?: number;
+  weight?: number;
+  waterPumpedInPhase?: number;
+}
+
+/** Single stop condition for UI: type + value. Used in dropdown list. */
+export type PhaseStopConditionType = keyof PhaseStopConditions;
+export interface PhaseStopConditionEntry {
+  type: PhaseStopConditionType;
+  value: number;
+}
+
+export interface Phase {
+  type: "PRESSURE" | "FLOW";
+  target: PhaseTarget;
+  restriction: number;
+  stopConditions: PhaseStopConditions;
+}
+
+export interface GlobalStopConditions {
+  time?: number; // seconds
+  weight?: number;
+  waterPumped?: number;
+}
+
+export type GlobalStopConditionType = keyof GlobalStopConditions;
+export interface GlobalStopConditionEntry {
+  type: GlobalStopConditionType;
+  value: number;
+}
+
+export interface PhaseProfile {
+  id: string;
+  name: string;
+  phases: Phase[];
+  globalStopConditions: GlobalStopConditions;
+}
+
+// Data point for phase profile line chart. Each phase is its own line: targetPressure_0, restrictionFlow_0, etc.
+export type PhaseGraphPoint = {
+  time: number; // seconds
+  phaseIndex?: number;
+} & Record<string, number | undefined>;
+
 // Default profiles
 export const defaultProfiles: PressureProfile[] = [
   {
@@ -67,6 +131,35 @@ export const defaultProfiles: PressureProfile[] = [
     hold: { duration: 20, pressure: 7 },
     decline: { duration: 10, targetPressure: 5 },
     stop: { weight: 100 },
+  },
+];
+
+// Default phase-based profiles (firmware-aligned)
+export const defaultPhaseProfiles: PhaseProfile[] = [
+  {
+    id: "blooming",
+    name: "Blooming",
+    phases: [
+      {
+        type: "PRESSURE",
+        target: { start: -1, end: 3, curve: "INSTANT", time: 0 },
+        restriction: 6,
+        stopConditions: { time: 10 },
+      },
+      {
+        type: "PRESSURE",
+        target: { start: -1, end: 9, curve: "LINEAR", time: 6 },
+        restriction: 9,
+        stopConditions: { time: 6 },
+      },
+      {
+        type: "PRESSURE",
+        target: { start: -1, end: 6, curve: "EASE_OUT", time: 12 },
+        restriction: 9,
+        stopConditions: { weight: 50 },
+      },
+    ],
+    globalStopConditions: { weight: 40 },
   },
 ];
 

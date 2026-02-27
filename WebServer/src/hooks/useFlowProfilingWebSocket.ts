@@ -57,6 +57,7 @@ export interface UseFlowProfilingWebSocketReturn {
   rawJson: string[];
   reconnect: () => void;
   sendCommand: (cmd: "GO" | "STOP" | "STATUS" | "PING") => void;
+  sendRaw: (payload: string) => void;
 }
 
 export function useFlowProfilingWebSocket({
@@ -81,8 +82,9 @@ export function useFlowProfilingWebSocket({
 
   const pushLog = useCallback(
     (line: string) => {
+      const ts = new Date().toISOString().slice(11, 23); // HH:mm:ss.sss
       setLogs((prev) => {
-        const next = [...prev, line];
+        const next = [...prev, `${ts} ${line}`];
         if (next.length > maxLogs) next.splice(0, next.length - maxLogs);
         return next;
       });
@@ -236,6 +238,23 @@ export function useFlowProfilingWebSocket({
     }
   }, [pushLog]);
 
+  const sendRaw = useCallback(
+    (payload: string) => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        try {
+          wsRef.current.send(payload);
+          const preview = payload.length > 80 ? payload.slice(0, 80) + "..." : payload;
+          pushLog(`[tx] ${preview}`);
+        } catch {
+          setError("Failed to send payload");
+        }
+      } else {
+        setError("WebSocket not connected");
+      }
+    },
+    [pushLog],
+  );
+
   useEffect(() => {
     if (!url) return;
     connect();
@@ -258,6 +277,7 @@ export function useFlowProfilingWebSocket({
     rawJson,
     reconnect,
     sendCommand,
+    sendRaw,
   };
 }
 

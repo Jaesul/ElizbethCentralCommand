@@ -5,44 +5,29 @@ import { useRouter } from "next/navigation";
 import { Plus, Edit, ChevronLeft, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
-import { ProfileGraph } from "~/components/ProfileGraph";
+import { PhaseProfileGraph } from "~/components/PhaseProfileGraph";
 import { useProfiles } from "~/hooks/useProfiles";
-import { generateProfileData, calculateTotalDuration } from "~/lib/profileUtils";
-import type { PressureProfile } from "~/types/profiles";
+import { calculatePhaseProfileDuration } from "~/lib/profileUtils";
+import type { PhaseProfile } from "~/types/profiles";
 
-function ProfileSummary({ profile }: { profile: PressureProfile }) {
-  const totalDuration = calculateTotalDuration(profile);
+function PhaseSummary({ profile }: { profile: PhaseProfile }) {
+  const totalSec = calculatePhaseProfileDuration(profile);
+  const stopWeight = profile.globalStopConditions.weight;
   return (
     <div className="space-y-1.5 border-t pt-2 text-sm text-muted-foreground">
       <div className="flex justify-between">
-        <span>PI:</span>
-        <span className="font-medium text-foreground">
-          {profile.preInfusion.duration}s @ {profile.preInfusion.pressure} bar
-        </span>
+        <span>Phases:</span>
+        <span className="font-medium text-foreground">{profile.phases.length}</span>
       </div>
-      <div className="flex justify-between">
-        <span>Ramp:</span>
-        <span className="font-medium text-foreground">
-          to {profile.ramp.targetPressure} bar over {profile.ramp.duration}s
-        </span>
-      </div>
-      <div className="flex justify-between">
-        <span>Hold:</span>
-        <span className="font-medium text-foreground">
-          {profile.hold.pressure} bar for {profile.hold.duration}s
-        </span>
-      </div>
-      <div className="flex justify-between">
-        <span>Decline:</span>
-        <span className="font-medium text-foreground">
-          to {profile.decline.targetPressure} bar over {profile.decline.duration}s
-        </span>
-      </div>
+      {stopWeight != null && (
+        <div className="flex justify-between">
+          <span>Stop:</span>
+          <span className="font-medium text-foreground">at {stopWeight}g</span>
+        </div>
+      )}
       <div className="flex justify-between border-t pt-1">
-        <span>Stop:</span>
-        <span className="font-medium text-foreground">
-          at {profile.stop.weight}g | Total: {totalDuration.toFixed(1)}s
-        </span>
+        <span>Est. total:</span>
+        <span className="font-medium text-foreground">{totalSec.toFixed(1)}s</span>
       </div>
     </div>
   );
@@ -106,35 +91,32 @@ export function ProfilesHomePage() {
                 className="flex cursor-default gap-6 overflow-x-auto px-10 py-8 [&::-webkit-scrollbar]:hidden"
                 style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
               >
-                {profiles.map((profile) => {
-                  const graphData = generateProfileData(profile);
-                  return (
-                    <div key={profile.id} className="w-[370px] shrink-0">
-                      <Card className="h-full border hover:border-primary/50">
-                        <CardHeader className="pb-2">
-                          <div className="flex items-start justify-between">
-                            <CardTitle className="text-lg">{profile.name}</CardTitle>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6"
-                              onClick={() => router.push(`/profiles/${profile.id}`)}
-                              aria-label={`Edit ${profile.name}`}
-                            >
-                              <Edit className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        </CardHeader>
-                        <CardContent className="space-y-4 pt-0">
-                          <div>
-                            <ProfileGraph data={graphData} height={180} inline />
-                          </div>
-                          <ProfileSummary profile={profile} />
-                        </CardContent>
-                      </Card>
-                    </div>
-                  );
-                })}
+                {profiles.map((profile) => (
+                  <div key={profile.id} className="w-[370px] shrink-0">
+                    <Card className="h-full border hover:border-primary/50">
+                      <CardHeader className="pb-2">
+                        <div className="flex items-start justify-between">
+                          <CardTitle className="text-lg">{profile.name}</CardTitle>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6"
+                            onClick={() => router.push(`/profiles/${profile.id}`)}
+                            aria-label={`Edit ${profile.name}`}
+                          >
+                            <Edit className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-4 pt-0">
+                        <div>
+                          <PhaseProfileGraph profile={profile} height={180} inline />
+                        </div>
+                        <PhaseSummary profile={profile} />
+                      </CardContent>
+                    </Card>
+                  </div>
+                ))}
               </div>
 
               <Button

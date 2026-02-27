@@ -6,12 +6,12 @@ import { ChevronLeft, ChevronRight, Plus, Trash2, Edit, Play } from "lucide-reac
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Badge } from "~/components/ui/badge";
-import { ProfileGraph } from "~/components/ProfileGraph";
-import type { PressureProfile } from "~/types/profiles";
-import { generateProfileData, calculateTotalDuration } from "~/lib/profileUtils";
+import { PhaseProfileGraph } from "~/components/PhaseProfileGraph";
+import type { PhaseProfile } from "~/types/profiles";
+import { calculatePhaseProfileDuration } from "~/lib/profileUtils";
 
 interface ProfileSelectorProps {
-  profiles: PressureProfile[];
+  profiles: PhaseProfile[];
   selectedProfileId: string | null;
   onSelectProfile: (id: string) => void;
   onDeleteProfile: (id: string) => void;
@@ -114,8 +114,7 @@ export function ProfileSelector({
           >
             {profiles.map((profile) => {
               const isSelected = profile.id === selectedProfileId;
-              const graphData = generateProfileData(profile);
-              const totalDuration = calculateTotalDuration(profile);
+              const totalDuration = calculatePhaseProfileDuration(profile);
 
               return (
                 <div
@@ -170,40 +169,26 @@ export function ProfileSelector({
                     <CardContent className="pt-0 space-y-4">
                       {/* Profile Graph */}
                       <div>
-                        <ProfileGraph data={graphData} height={180} inline />
+                        <PhaseProfileGraph profile={profile} height={180} inline />
                       </div>
 
                       {/* Profile Metrics */}
                       <div className="space-y-1.5 text-sm text-muted-foreground pt-2 border-t">
                         <div className="flex justify-between">
-                          <span>PI:</span>
-                          <span className="font-medium text-foreground">
-                            {profile.preInfusion.duration}s @ {profile.preInfusion.pressure} bar
-                          </span>
+                          <span>Phases:</span>
+                          <span className="font-medium text-foreground">{profile.phases.length}</span>
                         </div>
-                        <div className="flex justify-between">
-                          <span>Ramp:</span>
-                          <span className="font-medium text-foreground">
-                            to {profile.ramp.targetPressure} bar over {profile.ramp.duration}s
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>Hold:</span>
-                          <span className="font-medium text-foreground">
-                            {profile.hold.pressure} bar for {profile.hold.duration}s
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>Decline:</span>
-                          <span className="font-medium text-foreground">
-                            to {profile.decline.targetPressure} bar over {profile.decline.duration}s
-                          </span>
-                        </div>
+                        {profile.globalStopConditions.weight != null && (
+                          <div className="flex justify-between">
+                            <span>Stop:</span>
+                            <span className="font-medium text-foreground">
+                              at {profile.globalStopConditions.weight}g
+                            </span>
+                          </div>
+                        )}
                         <div className="flex justify-between pt-1 border-t">
-                          <span>Stop:</span>
-                          <span className="font-medium text-foreground">
-                            at {profile.stop.weight}g | Total: {totalDuration.toFixed(1)}s
-                          </span>
+                          <span>Est. total:</span>
+                          <span className="font-medium text-foreground">{totalDuration.toFixed(1)}s</span>
                         </div>
                       </div>
 

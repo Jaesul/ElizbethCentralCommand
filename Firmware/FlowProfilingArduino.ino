@@ -432,6 +432,7 @@ static inline void setPumpFlow(const float targetFlow, const float pressureRestr
 // ================== STATE ==================
 Profile profile;
 PhaseProfiler* phaseProfiler = nullptr;
+static char profileJsonBuf[PROFILE_JSON_MAX_SIZE];
 
 SensorState currentState;
 bool brewActive = false;
@@ -656,6 +657,27 @@ static void stopShot(const char* reason) {
   wsLog(String("[shot] STOP (") + reason + ")");
 }
 
+/** Load the currently active profile from NVS into runtime (profile + phaseProfiler). */
+static void loadActiveProfileIntoRuntime() {
+  const uint8_t activeIdx = profilesStorageGetActiveIndex();
+  const bool hasStored = profilesStorageGetSlotJson(activeIdx, profileJsonBuf, sizeof(profileJsonBuf));
+  const char* jsonToLoad = hasStored ? profileJsonBuf : PROFILE_JSON;
+  if (!parseProfileFromJson(profile, jsonToLoad)) {
+    wsLog("[profile] load failed; GO will do nothing until active profile is valid");
+    if (phaseProfiler) {
+      delete phaseProfiler;
+      phaseProfiler = nullptr;
+    }
+    return;
+  }
+  if (phaseProfiler) {
+    delete phaseProfiler;
+    phaseProfiler = nullptr;
+  }
+  phaseProfiler = new PhaseProfiler(profile);
+  wsLog(String("[profile] loaded slot ") + (int)activeIdx + " phases=" + (int)profile.phaseCount());
+}
+
 static void maybeStartProfileAfterPrebleed(uint32_t nowMs) {
   if (!brewActive || !phaseProfiler) return;
   if (profileActive) return;
@@ -725,17 +747,25 @@ static void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_
       }
       if (cmd == "GO") {
         if (!brewActive) startShot();
-        else webSocket.sendTXT(num, "[shot] already active");
+        else {
+          webSocket.sendTXT(num, "[shot] already active");
+          wsLog("[shot] already active");
+        }
         return;
       }
       if (cmd == "STOP") {
         if (brewActive) stopShot("user");
-        else webSocket.sendTXT(num, "[shot] not active");
+        else {
+          webSocket.sendTXT(num, "[shot] not active");
+          wsLog("[shot] not active");
+        }
         return;
       }
       if (cmd == "STATUS") {
         String s = "[status] brewActive=";
         s += (brewActive ? "1" : "0");
+        s += " activeProfile=";
+        s += String((int)profilesStorageGetActiveIndex());
         s += " p=";
         s += String(currentState.smoothedPressure, 2);
         s += "bar pumpFlow=";
@@ -752,10 +782,127 @@ static void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_
         s += String(pumpPowerPct, 1);
         s += "%";
         webSocket.sendTXT(num, s);
+        wsLog(s);
+        return;
+      }
+      if (cmd == "PROFILES") {
+        StaticJsonDocument<512> doc;
+        doc["active"] = (int)profilesStorageGetActiveIndex();
+        JsonArray slots = doc.createNestedArray("slots");
+        for (uint8_t i = 0; i < MAX_PROFILES; i++) {
+          JsonObject slot = slots.add<JsonObject>();
+          slot["index"] = (int)i;
+          if (profilesStorageGetSlotJson(i, profileJsonBuf, sizeof(profileJsonBuf))) {
+            StaticJsonDocument<256> slotDoc;
+            if (!deserializeJson(slotDoc, profileJsonBuf)) {
+              if (slotDoc.containsKey("name") && slotDoc["name"].is<const char*>())
+                slot["name"] = slotDoc["name"].as<const char*>();
+              else
+                slot["name"] = "";
+            } else {
+              slot["name"] = "";
+            }
+          } else {
+            slot["name"] = "";
+          }
+        }
+        String out;
+        serializeJson(doc, out);
+        webSocket.sendTXT(num, out);
+        wsLog("[ws] PROFILES sent");
+        return;
+      }
+      if (cmd == "SET_ACTIVE") {
+        int idx = -1;
+        if (cmdRaw.startsWith("{")) {
+          StaticJsonDocument<256> doc;
+          if (!deserializeJson(doc, cmdRaw) && doc.containsKey("index"))
+            idx = (int)doc["index"];
+        } else {
+          int space = cmdRaw.indexOf(' ');
+          if (space >= 0) idx = cmdRaw.substring(space + 1).trim().toInt();
+        }
+        if (idx < 0 || idx >= (int)MAX_PROFILES) {
+          String errMsg = "[profile] SET_ACTIVE requires index 0.." + String((int)MAX_PROFILES - 1);
+          webSocket.sendTXT(num, errMsg);
+          wsLog(errMsg);
+          return;
+        }
+        profilesStorageSetActive((uint8_t)idx);
+        loadActiveProfileIntoRuntime();
+        String namePart = "";
+        if (profilesStorageGetSlotJson((uint8_t)idx, profileJsonBuf, sizeof(profileJsonBuf))) {
+          StaticJsonDocument<256> slotDoc;
+          if (!deserializeJson(slotDoc, profileJsonBuf) && slotDoc.containsKey("name") && slotDoc["name"].is<const char*>())
+            namePart = String(" (") + slotDoc["name"].as<const char*>() + ")";
+        }
+        String setActiveMsg = "[profile] active set to " + String(idx) + namePart;
+        webSocket.sendTXT(num, setActiveMsg);
+        wsLog(setActiveMsg);
+        return;
+      }
+      if (cmd == "WRITE_PROFILE") {
+        // Payload must be JSON: { "command": "WRITE_PROFILE", "index": 0..4, "profile": "<string>" }
+        if (!cmdRaw.startsWith("{")) {
+          webSocket.sendTXT(num, "[profile] write failed: WRITE_PROFILE requires JSON payload");
+          wsLog("[profile] write failed: WRITE_PROFILE requires JSON payload");
+          return;
+        }
+        DynamicJsonDocument doc(2048);
+        DeserializationError err = deserializeJson(doc, cmdRaw);
+        if (err) {
+          String emsg = String("[profile] write failed: parse error ") + err.c_str();
+          webSocket.sendTXT(num, emsg);
+          wsLog(emsg);
+          return;
+        }
+        if (!doc.containsKey("index") || !doc.containsKey("profile")) {
+          webSocket.sendTXT(num, "[profile] write failed: missing index or profile");
+          wsLog("[profile] write failed: missing index or profile");
+          return;
+        }
+        int idx = (int)doc["index"];
+        const char* profileStr = doc["profile"].as<const char*>();
+        if (profileStr == nullptr) {
+          webSocket.sendTXT(num, "[profile] write failed: profile must be a string");
+          wsLog("[profile] write failed: profile must be a string");
+          return;
+        }
+        size_t plen = strlen(profileStr);
+        if (idx < 0 || idx >= (int)MAX_PROFILES) {
+          webSocket.sendTXT(num, "[profile] write failed: invalid index");
+          wsLog("[profile] write failed: invalid index");
+          return;
+        }
+        if (plen >= PROFILE_JSON_MAX_SIZE) {
+          webSocket.sendTXT(num, "[profile] write failed: profile too long");
+          wsLog("[profile] write failed: profile too long");
+          return;
+        }
+        Profile tempProfile;
+        if (!parseProfileFromJson(tempProfile, profileStr)) {
+          webSocket.sendTXT(num, "[profile] write failed: invalid profile JSON");
+          wsLog("[profile] write failed: invalid profile JSON");
+          return;
+        }
+        if (!profilesStorageWriteSlot((uint8_t)idx, profileStr)) {
+          webSocket.sendTXT(num, "[profile] write failed: NVS write error");
+          wsLog("[profile] write failed: NVS write error");
+          return;
+        }
+        String msg = "[profile] slot " + String(idx) + " written";
+        if ((uint8_t)idx == profilesStorageGetActiveIndex()) {
+          loadActiveProfileIntoRuntime();
+          msg += " and reloaded";
+        }
+        webSocket.sendTXT(num, msg);
+        wsLog(msg);
         return;
       }
 
-      webSocket.sendTXT(num, "[ws] Unknown command. Use GO/STOP/STATUS/PING.");
+      String unknownMsg = "[ws] Unknown command. Use GO/STOP/STATUS/PING/PROFILES/SET_ACTIVE/WRITE_PROFILE.";
+      webSocket.sendTXT(num, unknownMsg);
+      wsLog(unknownMsg);
       break;
     }
     default:
@@ -800,16 +947,7 @@ void setup() {
 
   // Load profiles from NVS (or defaults), then apply active profile.
   profilesStorageInit();
-  static char profileJsonBuf[PROFILE_JSON_MAX_SIZE];
-  const uint8_t activeIdx = profilesStorageGetActiveIndex();
-  const bool hasStored = profilesStorageGetSlotJson(activeIdx, profileJsonBuf, sizeof(profileJsonBuf));
-  const char* jsonToLoad = hasStored ? profileJsonBuf : PROFILE_JSON;
-  if (!parseProfileFromJson(profile, jsonToLoad)) {
-    wsLog("[profile] parse failed; sketch will run but GO will do nothing");
-  } else {
-    phaseProfiler = new PhaseProfiler(profile);
-    wsLog(String("[profile] loaded phases=") + (int)profile.phaseCount());
-  }
+  loadActiveProfileIntoRuntime();
 
   // WiFi + WebSocket
   initWiFi();
@@ -893,13 +1031,15 @@ void loop() {
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
-    cmd.toUpperCase();
-    if (cmd == "GO") startShot();
-    else if (cmd == "STOP") stopShot("serial");
-    else if (cmd == "STATUS") {
+    String cmdUpper = cmd;
+    cmdUpper.toUpperCase();
+    if (cmdUpper == "GO") startShot();
+    else if (cmdUpper == "STOP") stopShot("serial");
+    else if (cmdUpper == "STATUS") {
       Serial.printf(
-        "[status] brewActive=%d p=%.2fbar pumpFlow=%.2fml/s weight=%.2fg weightFlow=%.2fg/s clicks=%ld cps=%.1f power=%.1f%%\n",
+        "[status] brewActive=%d activeProfile=%d p=%.2fbar pumpFlow=%.2fml/s weight=%.2fg weightFlow=%.2fg/s clicks=%ld cps=%.1f power=%.1f%%\n",
         brewActive ? 1 : 0,
+        (int)profilesStorageGetActiveIndex(),
         currentState.smoothedPressure,
         currentState.smoothedPumpFlow,
         currentState.weight,
@@ -908,6 +1048,43 @@ void loop() {
         clicksPerSecond,
         pumpPowerPct
       );
+    }
+    else if (cmdUpper == "PROFILES") {
+      StaticJsonDocument<512> doc;
+      doc["active"] = (int)profilesStorageGetActiveIndex();
+      JsonArray slots = doc.createNestedArray("slots");
+      for (uint8_t i = 0; i < MAX_PROFILES; i++) {
+        JsonObject slot = slots.add<JsonObject>();
+        slot["index"] = (int)i;
+        if (profilesStorageGetSlotJson(i, profileJsonBuf, sizeof(profileJsonBuf))) {
+          StaticJsonDocument<256> slotDoc;
+          if (!deserializeJson(slotDoc, profileJsonBuf)) {
+            if (slotDoc.containsKey("name") && slotDoc["name"].is<const char*>())
+              slot["name"] = slotDoc["name"].as<const char*>();
+            else
+              slot["name"] = "";
+          } else {
+            slot["name"] = "";
+          }
+        } else {
+          slot["name"] = "";
+        }
+      }
+      String out;
+      serializeJson(doc, out);
+      Serial.println(out);
+    }
+    else if (cmdUpper.startsWith("SET_ACTIVE")) {
+      int idx = -1;
+      int space = cmd.indexOf(' ');
+      if (space >= 0) idx = cmd.substring(space + 1).trim().toInt();
+      if (idx < 0 || idx >= (int)MAX_PROFILES) {
+        Serial.printf("[profile] SET_ACTIVE requires index 0..%d\n", (int)MAX_PROFILES - 1);
+      } else {
+        profilesStorageSetActive((uint8_t)idx);
+        loadActiveProfileIntoRuntime();
+        Serial.printf("[profile] active set to %d\n", idx);
+      }
     }
   }
 

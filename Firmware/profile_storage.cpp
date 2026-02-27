@@ -7,17 +7,37 @@
 
 static uint8_t s_activeIndex = 0;
 
+// Slot 0: Blooming (pre-infusion hold, ramp to 9 bar, taper)
 static const char DEFAULT_SLOT0_JSON[] = R"json({"name":"Blooming","phases":[{"type":"PRESSURE","target":{"start":-1,"end":3.0,"curve":"INSTANT","time":0},"restriction":6.0,"stopConditions":{"time":10000}},{"type":"PRESSURE","target":{"start":-1,"end":9.0,"curve":"LINEAR","time":6000},"restriction":9.0,"stopConditions":{"time":6000}},{"type":"PRESSURE","target":{"start":-1,"end":6.0,"curve":"EASE_OUT","time":12000},"restriction":9.0,"stopConditions":{"weight":50.0}}],"globalStopConditions":{"weight":40.0}})json";
+
+// Slot 1: Conventional – classic 9 bar, minimal pre-infusion, ~25–30 s
+static const char DEFAULT_SLOT1_JSON[] = R"json({"name":"Conventional","phases":[{"type":"PRESSURE","target":{"start":-1,"end":2.0,"curve":"INSTANT","time":0},"restriction":4.0,"stopConditions":{"time":3000}},{"type":"PRESSURE","target":{"start":-1,"end":9.0,"curve":"LINEAR","time":4000},"restriction":9.0,"stopConditions":{"time":25000}},{"type":"PRESSURE","target":{"start":-1,"end":6.0,"curve":"EASE_OUT","time":5000},"restriction":9.0,"stopConditions":{"weight":45.0}}],"globalStopConditions":{"weight":38.0}})json";
+
+// Slot 2: Turbo – ~6 bar, coarser grind, shorter extraction (turbo shot style)
+static const char DEFAULT_SLOT2_JSON[] = R"json({"name":"Turbo","phases":[{"type":"PRESSURE","target":{"start":-1,"end":6.0,"curve":"LINEAR","time":3000},"restriction":6.0,"stopConditions":{"time":20000}},{"type":"PRESSURE","target":{"start":-1,"end":4.0,"curve":"EASE_OUT","time":5000},"restriction":6.0,"stopConditions":{"weight":55.0}}],"globalStopConditions":{"weight":50.0}})json";
+
+// Slot 3: Allongé – long pull, lower pressure, higher yield
+static const char DEFAULT_SLOT3_JSON[] = R"json({"name":"Allonge","phases":[{"type":"PRESSURE","target":{"start":-1,"end":2.0,"curve":"INSTANT","time":0},"restriction":4.0,"stopConditions":{"time":8000}},{"type":"PRESSURE","target":{"start":-1,"end":6.0,"curve":"LINEAR","time":5000},"restriction":7.0,"stopConditions":{"time":25000}},{"type":"PRESSURE","target":{"start":-1,"end":4.0,"curve":"EASE_OUT","time":15000},"restriction":6.0,"stopConditions":{"weight":100.0}}],"globalStopConditions":{"weight":90.0}})json";
+
+// Slot 4: Classic Italian – ramp to 9 bar, hold, then decline (lever-style)
+static const char DEFAULT_SLOT4_JSON[] = R"json({"name":"Classic Italian","phases":[{"type":"PRESSURE","target":{"start":-1,"end":9.0,"curve":"LINEAR","time":5000},"restriction":9.0,"stopConditions":{"time":15000}},{"type":"PRESSURE","target":{"start":-1,"end":5.0,"curve":"EASE_OUT","time":8000},"restriction":9.0,"stopConditions":{"weight":42.0}}],"globalStopConditions":{"weight":40.0}})json";
+
+static const char* const DEFAULT_SLOT_JSONS[MAX_PROFILES] = {
+  DEFAULT_SLOT0_JSON,
+  DEFAULT_SLOT1_JSON,
+  DEFAULT_SLOT2_JSON,
+  DEFAULT_SLOT3_JSON,
+  DEFAULT_SLOT4_JSON,
+};
 
 static void writeDefaultsToNVS(Preferences& prefs) {
   prefs.putUChar(PROFILES_NVS_KEY_VER, PROFILES_SCHEMA_VERSION);
   prefs.putUChar(PROFILES_NVS_KEY_ACTIVE, 0);
   s_activeIndex = 0;
 
-  prefs.putString("0", String(DEFAULT_SLOT0_JSON));
-  for (uint8_t i = 1; i < MAX_PROFILES; i++) {
+  for (uint8_t i = 0; i < MAX_PROFILES; i++) {
     char key[2] = { (char)('0' + i), '\0' };
-    prefs.putString(key, "");
+    prefs.putString(key, String(DEFAULT_SLOT_JSONS[i]));
   }
 }
 
