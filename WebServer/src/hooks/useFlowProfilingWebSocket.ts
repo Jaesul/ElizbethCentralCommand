@@ -45,6 +45,8 @@ export interface UseFlowProfilingWebSocketOptions {
   reconnectOnClose?: boolean;
   maxLogs?: number;
   includeRawJsonDuringShot?: boolean;
+  /** If true, send "PROFILES" on connect to request current profile from ESP */
+  requestProfileOnConnect?: boolean;
 }
 
 export interface UseFlowProfilingWebSocketReturn {
@@ -53,6 +55,8 @@ export interface UseFlowProfilingWebSocketReturn {
   lastMessageTime: string | undefined;
   sensor: FlowSensorData | null;
   shot: FlowShotData | null;
+  /** Current profile from ESP (raw JSON), e.g. after sending PROFILES or from STATUS */
+  espProfile: Record<string, unknown> | null;
   logs: string[];
   rawJson: string[];
   reconnect: () => void;
@@ -66,12 +70,14 @@ export function useFlowProfilingWebSocket({
   reconnectOnClose = true,
   maxLogs = 200,
   includeRawJsonDuringShot = true,
+  requestProfileOnConnect = false,
 }: UseFlowProfilingWebSocketOptions): UseFlowProfilingWebSocketReturn {
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastMessageTime, setLastMessageTime] = useState<string | undefined>();
   const [sensor, setSensor] = useState<FlowSensorData | null>(null);
   const [shot, setShot] = useState<FlowShotData | null>(null);
+  const [espProfile, setEspProfile] = useState<Record<string, unknown> | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [rawJson, setRawJson] = useState<string[]>([]);
 
@@ -103,6 +109,18 @@ export function useFlowProfilingWebSocket({
     [maxLogs],
   );
 
+  const setProfileFromMessage = useCallback((obj: unknown): boolean => {
+    if (obj == null || typeof obj !== "object") return false;
+    const o = obj as Record<string, unknown>;
+    if (Array.isArray(o.phases) && (typeof o.name === "string" || typeof o.id === "string")) {
+      setEspProfile(o);
+      return true;
+    }
+    if (o.currentProfile != null) return setProfileFromMessage(o.currentProfile);
+    if (Array.isArray(o.profiles) && o.profiles.length > 0) return setProfileFromMessage(o.profiles[0]);
+    return false;
+  }, []);
+
   const connect = useCallback(() => {
     if (!url || url.trim() === "") {
       isConnectingRef.current = false;
@@ -133,6 +151,14 @@ export function useFlowProfilingWebSocket({
         setError(null);
         isConnectingRef.current = false;
         pushLog(`[ui] connected: ${url}`);
+        if (requestProfileOnConnect) {
+          try {
+            ws.send("PROFILES");
+            pushLog(`[tx] PROFILES`);
+          } catch {
+            setError("Failed to send PROFILES");
+          }
+        }
       };
 
       ws.onmessage = (event) => {
@@ -189,6 +215,13 @@ export function useFlowProfilingWebSocket({
           return;
         }
 
+        // Profile from ESP (e.g. response to PROFILES or STATUS)
+        if (action === "profile") {
+          if (setProfileFromMessage(msg?.data ?? msg)) return;
+        } else if (setProfileFromMessage(msg)) {
+          return;
+        }
+
         // Unknown JSON: still log for debugging
         pushLog(`[ui] unknown message: ${raw.slice(0, 200)}`);
       };
@@ -215,7 +248,7 @@ export function useFlowProfilingWebSocket({
         reconnectTimeoutRef.current = setTimeout(() => connect(), reconnectInterval);
       }
     }
-  }, [url, reconnectInterval, reconnectOnClose, pushLog]);
+  }, [url, reconnectInterval, reconnectOnClose, pushLog, requestProfileOnConnect]);
 
   const reconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -273,6 +306,7 @@ export function useFlowProfilingWebSocket({
     lastMessageTime,
     sensor,
     shot,
+    espProfile,
     logs,
     rawJson,
     reconnect,

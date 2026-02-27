@@ -10,6 +10,7 @@ import { Badge } from "~/components/ui/badge";
 import { Slider } from "~/components/ui/slider";
 import { useWebSocket } from "~/hooks/useWebSocket";
 import { useFlowProfilingWebSocket } from "~/hooks/useFlowProfilingWebSocket";
+import type { UseFlowProfilingWebSocketReturn } from "~/hooks/useFlowProfilingWebSocket";
 import { useShotHistory } from "~/hooks/useShotHistory";
 import { useProfiles } from "~/hooks/useProfiles";
 import { useTestingMode } from "~/hooks/useTestingMode";
@@ -53,7 +54,11 @@ const getPressureWebSocketUrl = () => {
   return "";
 };
 
-export function ShotStopperPage() {
+export function ShotStopperPage({
+  flowConnection: flowConnectionProp,
+}: {
+  flowConnection?: UseFlowProfilingWebSocketReturn;
+} = {}) {
   // Avoid hydration mismatches: don't compute client-only values (URL, Date.now) during the initial SSR render.
   const [isMounted, setIsMounted] = useState(false);
   const [wsUrl, setWsUrl] = useState("");
@@ -85,7 +90,14 @@ export function ShotStopperPage() {
     reconnectOnClose: true,
   });
 
-  // Flow profiling WebSocket connection (FlowProfilingArduino firmware)
+  // Flow profiling: use injected connection (e.g. from testing page) or create our own
+  const flowFromHook = useFlowProfilingWebSocket({
+    url: flowConnectionProp != null ? "" : (isTestingMode ? "" : flowWsUrl),
+    reconnectInterval: 5000,
+    reconnectOnClose: true,
+    maxLogs: 800,
+    includeRawJsonDuringShot: true,
+  });
   const {
     isConnected: flowConnected,
     error: flowError,
@@ -96,13 +108,7 @@ export function ShotStopperPage() {
     sendCommand: flowSendCommand,
     sendRaw: flowSendRaw,
     reconnect: flowReconnect,
-  } = useFlowProfilingWebSocket({
-    url: isTestingMode ? "" : flowWsUrl,
-    reconnectInterval: 5000,
-    reconnectOnClose: true,
-    maxLogs: 800,
-    includeRawJsonDuringShot: true,
-  });
+  } = flowConnectionProp ?? flowFromHook;
   const { points: flowPoints, phaseMarkers: flowPhaseMarkers, isActive: flowShotActive } = useFlowShotHistory(flowSensor, flowShot);
   const [flowLogCopyStatus, setFlowLogCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [flowCsvCopyStatus, setFlowCsvCopyStatus] = useState<"idle" | "copied" | "error">("idle");

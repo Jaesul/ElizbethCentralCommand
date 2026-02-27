@@ -1,4 +1,13 @@
-import type { PressureProfile, PressureDataPoint, PhaseProfile, PhaseGraphPoint } from "~/types/profiles";
+import type {
+  PressureProfile,
+  PressureDataPoint,
+  PhaseProfile,
+  PhaseGraphPoint,
+  Phase,
+  PhaseTarget,
+  PhaseStopConditions,
+  GlobalStopConditions,
+} from "~/types/profiles";
 
 /**
  * Generate time/pressure data points from a pressure profile for graph visualization
@@ -160,6 +169,68 @@ function interpolate(curve: TransitionCurve, t: number): number {
     default:
       return t;
   }
+}
+
+/**
+ * Normalize a profile (e.g. from API/ESP) for graphing.
+ * - Converts time from milliseconds to seconds when values look like ms (> 100).
+ * - Converts target.start === -1 to undefined so the graph uses "previous phase end".
+ * Returns a full PhaseProfile so it can be passed to generatePhaseProfileGraphData / PhaseProfileGraph.
+ */
+export function normalizeProfileForGraph(profile: {
+  name?: string;
+  id?: string;
+  phases: Array<{
+    type?: "PRESSURE" | "FLOW";
+    target?: { start?: number; end?: number; curve?: string; time?: number };
+    restriction?: number;
+    stopConditions?: Record<string, number>;
+  }>;
+  globalStopConditions?: Record<string, number>;
+}): PhaseProfile {
+  const toSeconds = (v: number | undefined): number => {
+    if (v == null || Number.isNaN(v)) return 5;
+    if (v > 100) return v / 1000;
+    return v;
+  };
+
+  const phases: Phase[] = (profile.phases ?? []).map((p) => {
+    const target = p.target ?? { end: 0, curve: "INSTANT" as const, time: 0 };
+    const start = target.start;
+    const normalizedStart: number | undefined =
+      start == null || start === -1 ? undefined : start;
+
+    return {
+      type: p.type === "FLOW" ? "FLOW" : "PRESSURE",
+      target: {
+        start: normalizedStart,
+        end: typeof target.end === "number" ? target.end : 0,
+        curve:
+          target.curve === "LINEAR" ||
+          target.curve === "EASE_IN" ||
+          target.curve === "EASE_OUT" ||
+          target.curve === "EASE_IN_OUT"
+            ? target.curve
+            : "INSTANT",
+        time: toSeconds(target.time),
+      },
+      restriction: typeof p.restriction === "number" ? p.restriction : 0,
+      stopConditions: (p.stopConditions as PhaseStopConditions) ?? {},
+    };
+  });
+
+  const globalStopConditions: GlobalStopConditions = {};
+  const raw = profile.globalStopConditions ?? {};
+  if (typeof raw.weight === "number" && raw.weight > 0) globalStopConditions.weight = raw.weight;
+  if (typeof raw.time === "number" && raw.time > 0) globalStopConditions.time = toSeconds(raw.time);
+  if (typeof raw.waterPumped === "number" && raw.waterPumped > 0) globalStopConditions.waterPumped = raw.waterPumped;
+
+  return {
+    id: profile.id ?? "graph-profile",
+    name: profile.name ?? "Profile",
+    phases,
+    globalStopConditions,
+  };
 }
 
 /**
