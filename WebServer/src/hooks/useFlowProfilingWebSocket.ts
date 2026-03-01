@@ -182,6 +182,9 @@ export function useFlowProfilingWebSocket({
         const raw = String(event.data ?? "");
         // Some servers may send plain text (e.g. STATUS) - keep it as a log line.
         if (!raw.trim().startsWith("{")) {
+          if (raw.includes("[profile]") && (raw.includes("active set to") || raw.includes("SET_ACTIVE requires"))) {
+            console.log("[Set active response]", raw.trim());
+          }
           pushLog(raw.trim());
           return;
         }

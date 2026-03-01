@@ -816,7 +816,7 @@ static void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_
         wsLog("[ws] PROFILES sent");
         return;
       }
-      if (cmd == "SET_ACTIVE") {
+      if (cmd.startsWith("SET_ACTIVE")) {
         int idx = -1;
         if (cmdRaw.startsWith("{")) {
           StaticJsonDocument<256> doc;

@@ -65,13 +65,9 @@ export function ProfilesHomePage() {
 
   const handleDeviceSelectProfile = useCallback(
     (profileId: string) => {
-      const match = /^device-slot-(\d+)$/.exec(profileId);
-      if (match) {
-        const index = parseInt(match[1]!, 10);
-        flowSendRaw(`SET_ACTIVE ${index}`);
-      }
+      router.push(`/brew/${profileId}`);
     },
-    [flowSendRaw]
+    [router]
   );
 
   const handleDeviceStartShot = useCallback(
