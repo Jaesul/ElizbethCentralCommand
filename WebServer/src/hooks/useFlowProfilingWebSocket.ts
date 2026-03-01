@@ -99,6 +99,8 @@ export function useFlowProfilingWebSocket({
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isConnectingRef = useRef(false);
   const shotActiveRef = useRef(false);
+  const lastMessageTimeRef = useRef<string>("");
+  const lastMessageTimeUpdateRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const pushLog = useCallback(
     (line: string) => {
@@ -135,6 +137,14 @@ export function useFlowProfilingWebSocket({
     return false;
   }, []);
 
+  // Refs for handlers so connect() doesn't depend on them and get recreated every render
+  const pushLogRef = useRef<(line: string) => void>(() => {});
+  const pushRawRef = useRef<(line: string) => void>(() => {});
+  const setProfileFromMessageRef = useRef<(obj: unknown) => boolean>(() => false);
+  pushLogRef.current = pushLog;
+  pushRawRef.current = pushRaw;
+  setProfileFromMessageRef.current = setProfileFromMessage;
+
   const connect = useCallback(() => {
     if (!url || url.trim() === "") {
       isConnectingRef.current = false;
@@ -159,16 +169,17 @@ export function useFlowProfilingWebSocket({
     try {
       const ws = new WebSocket(url);
       wsRef.current = ws;
+      const reqProfile = requestProfileOnConnect;
 
       ws.onopen = () => {
         setIsConnected(true);
         setError(null);
         isConnectingRef.current = false;
-        pushLog(`[ui] connected: ${url}`);
-        if (requestProfileOnConnect) {
+        pushLogRef.current(`[ui] connected: ${url}`);
+        if (reqProfile) {
           try {
             ws.send("PROFILES");
-            pushLog(`[tx] PROFILES`);
+            pushLogRef.current(`[tx] PROFILES`);
           } catch {
             setError("Failed to send PROFILES");
           }
@@ -177,15 +188,21 @@ export function useFlowProfilingWebSocket({
 
       ws.onmessage = (event) => {
         const nowIso = new Date().toISOString();
-        setLastMessageTime(nowIso);
+        lastMessageTimeRef.current = nowIso;
+        // Throttle lastMessageTime state updates to avoid "Maximum update depth" when ESP sends many messages
+        if (lastMessageTimeUpdateRef.current == null) {
+          lastMessageTimeUpdateRef.current = setTimeout(() => {
+            lastMessageTimeUpdateRef.current = null;
+            setLastMessageTime(lastMessageTimeRef.current);
+          }, 100);
+        }
 
         const raw = String(event.data ?? "");
-        // Some servers may send plain text (e.g. STATUS) - keep it as a log line.
         if (!raw.trim().startsWith("{")) {
           if (raw.includes("[profile]") && (raw.includes("active set to") || raw.includes("SET_ACTIVE requires"))) {
             console.log("[Set active response]", raw.trim());
           }
-          pushLog(raw.trim());
+          pushLogRef.current(raw.trim());
           return;
         }
 
@@ -193,7 +210,7 @@ export function useFlowProfilingWebSocket({
         try {
           msg = JSON.parse(raw) as { action?: FlowWsAction; data?: unknown };
         } catch {
-          pushLog(`[ui] parse error: ${raw.slice(0, 200)}`);
+          pushLogRef.current(`[ui] parse error: ${raw.slice(0, 200)}`);
           return;
         }
 
@@ -203,7 +220,7 @@ export function useFlowProfilingWebSocket({
         if (action === "log_record") {
           const log = String((data as FlowLogData).log ?? "");
           const src = String((data as FlowLogData).source ?? "device");
-          pushLog(`[log:${src}] ${log}`);
+          pushLogRef.current(`[log:${src}] ${log}`);
           return;
         }
 
@@ -212,13 +229,12 @@ export function useFlowProfilingWebSocket({
           if (typeof s.brewActive === "boolean") {
             shotActiveRef.current = s.brewActive;
             if (!s.brewActive) {
-              // Reset raw stream between shots so copy/paste is clean.
               setRawJson([]);
             }
           }
           setSensor(s);
           if (includeRawJsonDuringShot && shotActiveRef.current) {
-            pushRaw(raw.trim());
+            pushRawRef.current(raw.trim());
           }
           return;
         }
@@ -227,12 +243,11 @@ export function useFlowProfilingWebSocket({
           shotActiveRef.current = true;
           setShot(data as FlowShotData);
           if (includeRawJsonDuringShot) {
-            pushRaw(raw.trim());
+            pushRawRef.current(raw.trim());
           }
           return;
         }
 
-        // PROFILES response: { "active": number, "slots": [ { index, name, profile, isActive }, ... ] }
         const asRecord = msg as Record<string, unknown>;
         if (
           typeof asRecord?.active === "number" &&
@@ -252,19 +267,17 @@ export function useFlowProfilingWebSocket({
             })),
           };
           setDeviceProfiles(payload);
-          pushLog("[rx] PROFILES");
+          pushLogRef.current("[rx] PROFILES");
           return;
         }
 
-        // Profile from ESP (e.g. response to PROFILES or STATUS)
         if (action === "profile") {
-          if (setProfileFromMessage(msg?.data ?? msg)) return;
-        } else if (setProfileFromMessage(msg)) {
+          if (setProfileFromMessageRef.current(msg?.data ?? msg)) return;
+        } else if (setProfileFromMessageRef.current(msg)) {
           return;
         }
 
-        // Unknown JSON: still log for debugging
-        pushLog(`[ui] unknown message: ${raw.slice(0, 200)}`);
+        pushLogRef.current(`[ui] unknown message: ${raw.slice(0, 200)}`);
       };
 
       ws.onerror = () => {
@@ -289,7 +302,7 @@ export function useFlowProfilingWebSocket({
         reconnectTimeoutRef.current = setTimeout(() => connect(), reconnectInterval);
       }
     }
-  }, [url, reconnectInterval, reconnectOnClose, pushLog, requestProfileOnConnect]);
+  }, [url, reconnectInterval, reconnectOnClose, requestProfileOnConnect]);
 
   const reconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -333,6 +346,10 @@ export function useFlowProfilingWebSocket({
     if (!url) return;
     connect();
     return () => {
+      if (lastMessageTimeUpdateRef.current != null) {
+        clearTimeout(lastMessageTimeUpdateRef.current);
+        lastMessageTimeUpdateRef.current = null;
+      }
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (wsRef.current) {
         wsRef.current.close(1000, "Component unmounting");
