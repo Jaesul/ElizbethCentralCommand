@@ -146,12 +146,6 @@ export function ShotStopperPage({
       flowDeviceProfiles.slots.find((s) => s.index === flowDeviceProfiles.active) ??
       flowDeviceProfiles.slots.find((s) => s.isActive) ??
       flowDeviceProfiles.slots[flowDeviceProfiles.active];
-    console.log("[ShotStopper] deviceProfiles", {
-      activeIndex: flowDeviceProfiles.active,
-      slots: flowDeviceProfiles.slots.map((s) => ({ index: s.index, name: s.name, isActive: s.isActive })),
-      chosenSlot: activeSlot ? { index: activeSlot.index, name: activeSlot.name, isActive: activeSlot.isActive } : null,
-      activeDeviceProfileName: activeDeviceProfile?.name ?? null,
-    });
   }, [flowDeviceProfiles, activeDeviceProfile?.name]);
 
   const buildPressureCsv = () => {
@@ -262,18 +256,22 @@ export function ShotStopperPage({
   // Don't use Date.now() in render; it will differ between SSR and client and cause hydration warnings.
   const lastMessageTime = isTestingMode ? undefined : wsLastMessageTime;
 
-  // Manual triac power control (for flow profiling comparisons)
-  const [pumpPowerPct, setPumpPowerPct] = useState(100);
+  // Manual triac power control (for flow profiling comparisons).
+  // Initial 0 when no data; once we get ESP data we use it; when data stops we keep the last value.
+  const [pumpPowerPct, setPumpPowerPct] = useState(0);
   const [isPowerSliding, setIsPowerSliding] = useState(false);
 
   useEffect(() => {
     if (isTestingMode) return;
     if (isPowerSliding) return;
     const v = wsData?.pumpPowerPct;
-    if (typeof v === "number" && Number.isFinite(v)) {
-      setPumpPowerPct(Math.max(0, Math.min(100, Math.round(v))));
-    }
+    if (typeof v !== "number" || !Number.isFinite(v)) return; // no data: keep previous value
+    const next = Math.max(0, Math.min(100, Math.round(v)));
+    setPumpPowerPct((prev) => (prev !== next ? next : prev)); // only update when value actually changed to avoid loops
   }, [wsData?.pumpPowerPct, isTestingMode, isPowerSliding]);
+
+  // Stable array for controlled Slider to avoid "Maximum update depth exceeded" (new [pumpPowerPct] each render triggers Radix onValueChange loop)
+  const sliderPumpPowerValue = useMemo(() => [pumpPowerPct], [pumpPowerPct]);
 
   // Handle sendMessage - disable in testing mode or make it control mock data
   const sendMessage = isTestingMode 
@@ -588,7 +586,7 @@ export function ShotStopperPage({
           </CardHeader>
           <CardContent className="space-y-3">
             <Slider
-              value={[pumpPowerPct]}
+              value={sliderPumpPowerValue}
               min={0}
               max={100}
               step={1}

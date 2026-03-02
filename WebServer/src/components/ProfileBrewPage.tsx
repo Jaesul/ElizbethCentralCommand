@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
-import { PhaseProfileGraphWithLive } from "~/components/PhaseProfileGraphWithLive";
+import { PhaseProfileGraph } from "~/components/PhaseProfileGraph";
+import { LiveTelemetryChart } from "~/components/LiveTelemetryChart";
 import { useFlowProfilingWebSocket } from "~/hooks/useFlowProfilingWebSocket";
 import { useFlowShotHistory } from "~/hooks/useFlowShotHistory";
 import { normalizeProfileForGraph } from "~/lib/profileUtils";
@@ -74,7 +75,7 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
     requestProfileOnConnect: true,
   });
 
-  const { points: livePoints } = useFlowShotHistory(flowSensor, flowShot);
+  const { points: livePoints, phaseMarkers } = useFlowShotHistory(flowSensor, flowShot);
 
   const profile: PhaseProfile | null = useMemo(() => {
     if (!flowDeviceProfiles?.slots?.length || !profileId) return null;
@@ -104,7 +105,6 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
   const handleSetAsDefault = useCallback(() => {
     if (slotIndex == null) return;
     const cmd = `SET_ACTIVE ${slotIndex}`;
-    console.log("[Set as default] slotIndex:", slotIndex, "sending:", cmd, "flowConnected:", flowConnected);
     flowSendRaw(cmd);
     // Refetch profiles so UI shows updated active slot
     setTimeout(() => flowSendRaw("PROFILES"), 300);
@@ -114,9 +114,18 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
     flowSendCommand("GO");
   }, [flowSendCommand]);
 
+  const [stopClickedOptimistic, setStopClickedOptimistic] = useState(false);
+
   const handleStop = useCallback(() => {
     flowSendCommand("STOP");
+    setStopClickedOptimistic(true);
   }, [flowSendCommand]);
+
+  useEffect(() => {
+    if (flowSensor?.brewActive === false) setStopClickedOptimistic(false);
+  }, [flowSensor?.brewActive]);
+
+  const isBrewing = !stopClickedOptimistic && (flowSensor?.brewActive ?? false);
 
   const pressure = flowShot?.pressure ?? flowSensor?.pressure;
   const pumpFlow = flowShot?.pumpFlow ?? flowSensor?.pumpFlow;
@@ -166,13 +175,13 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
           <Button variant="outline" onClick={handleSetAsDefault} disabled={!flowConnected} className="cursor-pointer">
             Set as default
           </Button>
-          <Button onClick={handleBrew} disabled={!flowConnected || flowSensor?.brewActive} className="cursor-pointer">
+          <Button onClick={handleBrew} disabled={!flowConnected || isBrewing} className="cursor-pointer">
             Brew
           </Button>
           <Button
             variant="destructive"
             onClick={handleStop}
-            disabled={!flowConnected || !flowSensor?.brewActive}
+            disabled={!flowConnected || !isBrewing}
             className="cursor-pointer"
           >
             Stop
@@ -220,16 +229,24 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
           )}
         </aside>
 
-        <div className="min-w-0">
+        <div className="min-w-0 space-y-6">
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-lg">Profile & live</CardTitle>
+              <CardTitle className="text-lg">Profile</CardTitle>
             </CardHeader>
             <CardContent className="pt-0">
-              <PhaseProfileGraphWithLive
-                profile={profile}
-                livePoints={livePoints}
-                height={420}
+              <PhaseProfileGraph profile={profile} height={380} />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-lg">Live telemetry</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <LiveTelemetryChart
+                points={livePoints}
+                phaseMarkers={phaseMarkers}
+                height={360}
               />
             </CardContent>
           </Card>

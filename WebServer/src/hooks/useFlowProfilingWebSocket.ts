@@ -60,6 +60,35 @@ export interface UseFlowProfilingWebSocketOptions {
   requestProfileOnConnect?: boolean;
 }
 
+/** Coerce raw WebSocket payload to FlowShotData so numeric fields are real numbers (ESP may send strings or alternate keys). */
+function normalizeShotData(data: Record<string, unknown>): FlowShotData {
+  const num = (v: unknown): number | undefined => {
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string") {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    }
+    return undefined;
+  };
+  return {
+    timeInShot: num(data.timeInShot),
+    profileTimeInShot: num(data.profileTimeInShot),
+    pressure: num(data.pressure),
+    pumpFlow: num(data.pumpFlow),
+    weightFlow: num(data.weightFlow),
+    shotWeight: num(data.shotWeight) ?? num(data.weight),
+    waterPumped: num(data.waterPumped),
+    targetPumpFlow: num(data.targetPumpFlow),
+    targetPressure: num(data.targetPressure),
+    phaseIdx: num(data.phaseIdx),
+    phaseType: data.phaseType === "PRESSURE" || data.phaseType === "FLOW" ? data.phaseType : undefined,
+    timeInPhase: num(data.timeInPhase),
+    pumpClicks: num(data.pumpClicks),
+    pumpCps: num(data.pumpCps),
+    pumpPowerPct: num(data.pumpPowerPct),
+  };
+}
+
 export interface UseFlowProfilingWebSocketReturn {
   isConnected: boolean;
   error: string | null;
@@ -99,8 +128,16 @@ export function useFlowProfilingWebSocket({
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isConnectingRef = useRef(false);
   const shotActiveRef = useRef(false);
+  // True once we start receiving shot_data_update; used to avoid sensor_data_update
+  // "synthetic shot" clobbering the real shot timebase and making time jump backwards.
+  const hasShotTelemetryRef = useRef(false);
+  const brewStartMsRef = useRef<number>(0);
   const lastMessageTimeRef = useRef<string>("");
   const lastMessageTimeUpdateRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const setShotRef = useRef(setShot);
+  const shotPayloadRef = useRef<FlowShotData | null>(null);
+  const shotThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  setShotRef.current = setShot;
 
   const pushLog = useCallback(
     (line: string) => {
@@ -230,9 +267,19 @@ export function useFlowProfilingWebSocket({
             shotActiveRef.current = s.brewActive;
             if (!s.brewActive) {
               setRawJson([]);
+              brewStartMsRef.current = 0;
+              hasShotTelemetryRef.current = false;
+            } else if (brewStartMsRef.current === 0) {
+              brewStartMsRef.current = Date.now();
             }
           }
           setSensor(s);
+          // Only synthesize shot points from sensor_data_update until we have real shot telemetry.
+          if (shotActiveRef.current && !hasShotTelemetryRef.current) {
+            const elapsed = Date.now() - brewStartMsRef.current;
+            const normalized = normalizeShotData({ ...data, timeInShot: elapsed, shotWeight: data.weight ?? data.shotWeight });
+            setShotRef.current(normalized);
+          }
           if (includeRawJsonDuringShot && shotActiveRef.current) {
             pushRawRef.current(raw.trim());
           }
@@ -241,7 +288,16 @@ export function useFlowProfilingWebSocket({
 
         if (action === "shot_data_update") {
           shotActiveRef.current = true;
-          setShot(data as FlowShotData);
+          hasShotTelemetryRef.current = true;
+          const normalized = normalizeShotData(data);
+          shotPayloadRef.current = normalized;
+          if (shotThrottleRef.current == null) {
+            shotThrottleRef.current = setTimeout(() => {
+              shotThrottleRef.current = null;
+              const payload = shotPayloadRef.current;
+              if (payload) setShotRef.current(payload);
+            }, 50);
+          }
           if (includeRawJsonDuringShot) {
             pushRawRef.current(raw.trim());
           }
@@ -254,8 +310,6 @@ export function useFlowProfilingWebSocket({
           Array.isArray(asRecord.slots) &&
           asRecord.slots.length > 0
         ) {
-          console.log("[FlowProfiling] PROFILES raw response", raw);
-          console.log("[FlowProfiling] PROFILES parsed", msg);
           const slots = asRecord.slots as Array<Record<string, unknown>>;
           const payload: DeviceProfilesPayload = {
             active: asRecord.active as number,
@@ -349,6 +403,10 @@ export function useFlowProfilingWebSocket({
       if (lastMessageTimeUpdateRef.current != null) {
         clearTimeout(lastMessageTimeUpdateRef.current);
         lastMessageTimeUpdateRef.current = null;
+      }
+      if (shotThrottleRef.current != null) {
+        clearTimeout(shotThrottleRef.current);
+        shotThrottleRef.current = null;
       }
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (wsRef.current) {

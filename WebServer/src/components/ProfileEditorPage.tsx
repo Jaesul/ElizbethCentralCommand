@@ -734,7 +734,6 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
   };
 
   const updatePhase = (index: number, phase: Phase) => {
-    console.log("[updatePhase] index:", index, "phase:", { type: phase.type, end: phase.target.end, restriction: phase.restriction });
     setPhases(phases.map((p, i) => (i === index ? phase : p)));
   };
 
