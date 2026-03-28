@@ -2,7 +2,7 @@
 
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, ChevronRight, Plus, Trash2, Edit, Play } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Trash2, Edit } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Badge } from "~/components/ui/badge";
@@ -132,8 +132,8 @@ export function ProfileSelector({
                 <div
                   key={profile.id}
                   data-profile-id={profile.id}
-                  className={`shrink-0 w-[370px] transition-all ${
-                    isSelected ? "scale-105" : "opacity-75 hover:opacity-100"
+                  className={`shrink-0 w-[370px] cursor-pointer transition-transform duration-300 ease-out ${
+                    isSelected ? "scale-105 hover:scale-[1.07]" : "opacity-75 hover:opacity-100 hover:scale-[1.03]"
                   }`}
                 >
                   <Card
@@ -212,21 +212,6 @@ export function ProfileSelector({
                         </div>
                       </div>
 
-                      {/* Brew Button */}
-                      {onStartShot && (
-                        <Button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onStartShot(profile.id);
-                          }}
-                          disabled={!isConnected || isBrewing}
-                          className="w-full"
-                          size="sm"
-                        >
-                          <Play className="mr-2 h-4 w-4" />
-                          Brew
-                        </Button>
-                      )}
                       {showDeleteConfirm === profile.id && !readOnly && (
                         <div className="mt-2 p-2 bg-destructive/10 border border-destructive rounded text-xs">
                           <div className="mb-1 text-destructive font-medium">

@@ -1,42 +1,25 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 import { Card, CardContent } from "~/components/ui/card";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Button } from "~/components/ui/button";
+import { useFlowConnection } from "~/components/FlowConnectionProvider";
 import { ProfileSelector } from "~/components/ProfileSelector";
-import { useFlowProfilingWebSocket } from "~/hooks/useFlowProfilingWebSocket";
 import { normalizeProfileForGraph } from "~/lib/profileUtils";
 import type { PhaseProfile } from "~/types/profiles";
 
-const getFlowWebSocketUrl = () => {
-  const customUrl = process.env.NEXT_PUBLIC_FLOW_WS_URL;
-  if (customUrl) return customUrl;
-  return "ws://shotstopper-ws.local:81";
-};
-
 export function ProfilesHomePage() {
   const router = useRouter();
-  const [flowWsUrl, setFlowWsUrl] = useState("");
-
-  useEffect(() => {
-    setFlowWsUrl(getFlowWebSocketUrl());
-  }, []);
 
   const {
     isConnected: flowConnected,
     deviceProfiles: flowDeviceProfiles,
     sendRaw: flowSendRaw,
     sendCommand: flowSendCommand,
-  } = useFlowProfilingWebSocket({
-    url: flowWsUrl,
-    reconnectInterval: 5000,
-    reconnectOnClose: true,
-    maxLogs: 200,
-    requestProfileOnConnect: true,
-  });
+  } = useFlowConnection();
 
   const deviceProfilesAsPhaseProfiles: PhaseProfile[] = useMemo(() => {
     if (!flowDeviceProfiles?.slots?.length) return [];
@@ -86,7 +69,7 @@ export function ProfilesHomePage() {
   );
 
   return (
-    <div className="container mx-auto max-w-6xl px-4 py-8">
+    <div className="container mx-auto max-w-5xl px-4 py-8 xl:max-w-6xl">
       {/* Device profiles carousel (ESP saved profiles + active) */}
       <div>
         <div className="flex items-center justify-between mb-2">

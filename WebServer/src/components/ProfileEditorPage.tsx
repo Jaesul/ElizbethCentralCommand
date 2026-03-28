@@ -1,12 +1,21 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronDown, Plus, Trash2 } from "lucide-react";
+import { useFlowConnection } from "~/components/FlowConnectionProvider";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
 import { PhaseProfileGraph } from "~/components/PhaseProfileGraph";
 import { useProfiles } from "~/hooks/useProfiles";
+import { useToast } from "~/components/ui/use-toast";
 import type {
   PhaseProfile,
   Phase,
@@ -18,7 +27,7 @@ import type {
   GlobalStopConditionType,
   GlobalStopConditionEntry,
 } from "~/types/profiles";
-import { validatePhaseProfile, calculatePhaseProfileDuration } from "~/lib/profileUtils";
+import { calculatePhaseProfileDuration, importGaggiuinoProfile, validatePhaseProfile } from "~/lib/profileUtils";
 import { PROFILE_PRESSURE_COLOR, PROFILE_FLOW_COLOR } from "~/lib/profileColors";
 import { cn } from "~/lib/utils";
 
@@ -222,7 +231,7 @@ function StepSummaryCard({ phase, index, selected, onClick, innerRef }: StepSumm
       onClick={onClick}
       aria-pressed={selected}
       aria-label={selected ? `Step ${index + 1}, currently editing` : `Step ${index + 1}, click to edit`}
-      className={`flex-shrink-0 snap-center rounded-lg border-2 p-3 text-left transition-all w-[160px] min-h-[100px] hover:opacity-90 ${
+      className={`flex-shrink-0 snap-center rounded-lg border-2 p-3 text-left transition-all transition-transform duration-150 cursor-pointer w-[160px] min-h-[100px] hover:opacity-90 hover:scale-[1.03] ${
         selected ? "scale-[1.02]" : ""
       }`}
       style={{
@@ -407,10 +416,56 @@ interface AddStopConditionRowProps<T extends PhaseStopConditionType | GlobalStop
   onAdd: (type: T, value: number) => void;
 }
 
+interface DropdownOption<T extends string> {
+  value: T;
+  label: string;
+}
+
+interface DropdownSelectorProps<T extends string> {
+  value: T;
+  options: readonly DropdownOption<T>[];
+  onChange: (value: T) => void;
+  placeholder?: string;
+  triggerClassName?: string;
+  contentClassName?: string;
+}
+
+function DropdownSelector<T extends string>({
+  value,
+  options,
+  onChange,
+  placeholder = "Choose option",
+  triggerClassName,
+  contentClassName,
+}: DropdownSelectorProps<T>) {
+  const selectedOption = options.find((option) => option.value === value);
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="outline" className={cn("justify-between font-normal", triggerClassName)}>
+          <span>{selectedOption?.label ?? placeholder}</span>
+          <ChevronDown className="h-4 w-4 opacity-50" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className={contentClassName}>
+        <DropdownMenuRadioGroup value={value} onValueChange={(nextValue) => onChange(nextValue as T)}>
+          {options.map((option) => (
+            <DropdownMenuRadioItem key={option.value} value={option.value}>
+              {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function AddStopConditionRow<T extends PhaseStopConditionType | GlobalStopConditionType>({
   availableOptions,
   onAdd,
 }: AddStopConditionRowProps<T>) {
+  const [isAdding, setIsAdding] = useState(false);
   const [selectedType, setSelectedType] = useState<T | "">(() => availableOptions[0]?.type ?? "");
   const [value, setValue] = useState("");
 
@@ -421,30 +476,51 @@ function AddStopConditionRow<T extends PhaseStopConditionType | GlobalStopCondit
     }
   }, [availableOptions, selectedType]);
 
-  const handleAdd = () => {
+  const handleStartAdd = () => {
+    setIsAdding(true);
+    setSelectedType((availableOptions[0]?.type ?? "") as T | "");
+    setValue("");
+  };
+
+  const handleSave = () => {
     if (!opt || value === "") return;
     const n = parseFloat(value);
     if (!Number.isNaN(n)) {
       onAdd(opt.type, n);
       setValue("");
+      setIsAdding(false);
       const next = availableOptions.find((o) => o.type !== opt.type)?.type ?? availableOptions[0]?.type ?? "";
       setSelectedType(next as T | "");
     }
   };
 
+  const handleCancel = () => {
+    setIsAdding(false);
+    setValue("");
+    setSelectedType((availableOptions[0]?.type ?? "") as T | "");
+  };
+
+  if (!isAdding) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        <Button type="button" size="sm" variant="outline" onClick={handleStartAdd}>
+          <Plus className="mr-1 h-3.5 w-3.5" />
+          Add
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-2 pt-1">
-      <select
-        value={selectedType}
-        onChange={(e) => setSelectedType(e.target.value as T | "")}
-        className="rounded-md border border-input bg-transparent px-2 py-1.5 text-sm"
-      >
-        {availableOptions.map((o) => (
-          <option key={o.type} value={o.type}>
-            {o.label}
-          </option>
-        ))}
-      </select>
+      <DropdownSelector
+        value={opt?.type ?? availableOptions[0]?.type ?? ("" as T)}
+        options={availableOptions.map((o) => ({ value: o.type, label: o.label }))}
+        onChange={setSelectedType}
+        placeholder="Choose condition"
+        triggerClassName="min-w-[190px]"
+        contentClassName="min-w-[190px]"
+      />
       {opt && (
         <>
           <input
@@ -460,9 +536,11 @@ function AddStopConditionRow<T extends PhaseStopConditionType | GlobalStopCondit
           <span className="text-xs text-muted-foreground">{opt.unit}</span>
         </>
       )}
-      <Button type="button" size="sm" variant="outline" onClick={handleAdd} disabled={!opt || value === ""}>
-        <Plus className="mr-1 h-3.5 w-3.5" />
-        Add
+      <Button type="button" size="sm" variant="outline" onClick={handleSave} disabled={!opt || value === ""}>
+        Save
+      </Button>
+      <Button type="button" size="sm" variant="ghost" onClick={handleCancel}>
+        Cancel
       </Button>
     </div>
   );
@@ -560,10 +638,11 @@ function PhaseStepEditor({ phase, index, onChange, onRemove, onSaveStep, canRemo
 
         <div>
           <label className="text-sm font-medium">Curve</label>
-          <select
-            value={phase.target.curve}
-            onChange={(e) => {
-              const nextCurve = e.target.value as TransitionCurve;
+          <div className="mt-1">
+            <DropdownSelector
+              value={phase.target.curve}
+              options={CURVES.map((curve) => ({ value: curve.value, label: curve.label }))}
+              onChange={(nextCurve) => {
               const nextTarget = { ...phase.target, curve: nextCurve };
               // When switching from INSTANT to a start/end curve and no explicit start is set yet,
               // default start to 0 so the graph uses 0 instead of the previous phase's end.
@@ -571,15 +650,11 @@ function PhaseStepEditor({ phase, index, onChange, onRemove, onSaveStep, canRemo
                 nextTarget.start = 0;
               }
               onChange({ ...phase, target: nextTarget });
-            }}
-            className="mt-1 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            {CURVES.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
+              }}
+              triggerClassName="w-full"
+              contentClassName="w-[var(--radix-dropdown-menu-trigger-width)] min-w-[var(--radix-dropdown-menu-trigger-width)]"
+            />
+          </div>
         </div>
 
         {/* Restriction = cap on the other axis: pressure phase → flow cap (ml/s); flow phase → pressure cap (bar) */}
@@ -602,14 +677,73 @@ function PhaseStepEditor({ phase, index, onChange, onRemove, onSaveStep, canRemo
 export function ProfileEditorPage({ profileId }: { profileId?: string }) {
   const router = useRouter();
   const { profiles, isLoaded, createProfile, updateProfile, selectProfile } = useProfiles();
+  const { toast } = useToast();
+  const { isConnected: flowConnected, sendRaw: flowSendRaw } = useFlowConnection();
 
   const [name, setName] = useState("");
   const [phases, setPhases] = useState<Phase[]>([{ ...defaultPhase }]);
   const [commandedPhases, setCommandedPhases] = useState<Phase[]>([{ ...defaultPhase }]);
   const [globalStop, setGlobalStop] = useState<GlobalStopConditions>({ weight: 40 });
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
+  const [deviceSlotIndexToWrite, setDeviceSlotIndexToWrite] = useState<number | null>(null);
+  const [advancedOverrideOpen, setAdvancedOverrideOpen] = useState(false);
+  const [advancedOverrideJson, setAdvancedOverrideJson] = useState("");
+  const [advancedOverrideErrors, setAdvancedOverrideErrors] = useState<string[]>([]);
   const carouselRef = useRef<HTMLDivElement>(null);
   const stepCardRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const buildFirmwareProfileJson = useCallback((candidate: PhaseProfile): string => {
+    const toMs = (seconds: number | undefined): number | undefined => {
+      if (seconds == null) return undefined;
+      if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
+      return Math.round(seconds * 1000);
+    };
+
+    const phasesOut = candidate.phases.map((p) => {
+      const targetTimeMs = toMs(p.target?.time);
+      const stop = p.stopConditions ?? {};
+      const stopOut: Record<string, number> = {};
+      // Firmware advances phases based on stopConditions (not target.time alone).
+      // Make "Target time" authoritative for time-based phase progression.
+      if (targetTimeMs != null) {
+        stopOut.time = targetTimeMs;
+      } else if (toMs(stop.time) != null) {
+        stopOut.time = toMs(stop.time)!;
+      }
+      if (typeof stop.pressureAbove === "number" && stop.pressureAbove > 0) stopOut.pressureAbove = stop.pressureAbove;
+      if (typeof stop.pressureBelow === "number" && stop.pressureBelow > 0) stopOut.pressureBelow = stop.pressureBelow;
+      if (typeof stop.flowAbove === "number" && stop.flowAbove > 0) stopOut.flowAbove = stop.flowAbove;
+      if (typeof stop.flowBelow === "number" && stop.flowBelow > 0) stopOut.flowBelow = stop.flowBelow;
+      if (typeof stop.weight === "number" && stop.weight > 0) stopOut.weight = stop.weight;
+      if (typeof stop.waterPumpedInPhase === "number" && stop.waterPumpedInPhase > 0) stopOut.waterPumpedInPhase = stop.waterPumpedInPhase;
+
+      const targetOut: Record<string, number | string> = {
+        end: p.target.end,
+        curve: p.target.curve,
+        time: targetTimeMs ?? 0,
+      };
+      if (typeof p.target.start === "number") targetOut.start = p.target.start;
+
+      return {
+        type: p.type,
+        target: targetOut,
+        restriction: p.restriction,
+        stopConditions: stopOut,
+      };
+    });
+
+    const g = candidate.globalStopConditions ?? {};
+    const globalOut: Record<string, number> = {};
+    if (toMs(g.time) != null) globalOut.time = toMs(g.time)!;
+    if (typeof g.weight === "number" && g.weight > 0) globalOut.weight = g.weight;
+    if (typeof g.waterPumped === "number" && g.waterPumped > 0) globalOut.waterPumped = g.waterPumped;
+
+    return JSON.stringify({
+      name: candidate.name,
+      phases: phasesOut,
+      globalStopConditions: globalOut,
+    });
+  }, []);
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -622,6 +756,7 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
         setCommandedPhases(loadedPhases.map((ph) => ({ ...ph })));
         setGlobalStop({ ...p.globalStopConditions });
         setSelectedStepIndex(0);
+        setDeviceSlotIndexToWrite(null);
       } else {
         router.push("/");
       }
@@ -629,7 +764,7 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
       try {
         const raw = typeof window !== "undefined" && sessionStorage.getItem("elizbeth-profile-edit-initial");
         if (raw) {
-          const data = JSON.parse(raw) as { name?: string; phases?: Phase[]; globalStopConditions?: GlobalStopConditions };
+          const data = JSON.parse(raw) as { id?: string; name?: string; phases?: Phase[]; globalStopConditions?: GlobalStopConditions };
           if (
             data &&
             typeof data.name === "string" &&
@@ -638,6 +773,8 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
             data.globalStopConditions &&
             typeof data.globalStopConditions === "object"
           ) {
+            const match = typeof data.id === "string" ? /^device-slot-(\d+)$/.exec(data.id) : null;
+            setDeviceSlotIndexToWrite(match ? parseInt(match[1]!, 10) : null);
             const loadedPhases = data.phases.map((ph) => ({ ...ph }));
             setName(data.name);
             setPhases(loadedPhases);
@@ -658,6 +795,7 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
       setCommandedPhases(initial.map((ph) => ({ ...ph })));
       setGlobalStop({ weight: 40 });
       setSelectedStepIndex(0);
+      setDeviceSlotIndexToWrite(null);
     }
   }, [profileId, profiles, isLoaded, router]);
 
@@ -704,13 +842,41 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
       alert(`Validation:\n${errors.join("\n")}`);
       return;
     }
+
+    // If we're editing a device profile (loaded from sessionStorage with id device-slot-N),
+    // persist to ESP via WRITE_PROFILE.
+    if (deviceSlotIndexToWrite != null) {
+      if (!flowConnected) {
+        alert("Not connected to the device WebSocket. Connect to the device, then try Save again.");
+        return;
+      }
+      const profileJson = buildFirmwareProfileJson(candidate);
+      const payload = JSON.stringify({
+        command: "WRITE_PROFILE",
+        index: deviceSlotIndexToWrite,
+        profile: profileJson,
+      });
+      flowSendRaw(payload);
+      // Refresh device slots so the UI reflects the saved profile.
+      setTimeout(() => flowSendRaw("PROFILES"), 300);
+      toast({
+        title: "Profile saved to device",
+        description: `Saved changes to “${candidate.name || "Profile"}”.`,
+        actionLabel: "Go to brew page",
+        onAction: () => {
+          router.push(`/brew/device-slot-${deviceSlotIndexToWrite}`);
+        },
+      });
+      return;
+    }
+
     if (profileId) {
       updateProfile(profileId, { name: candidate.name, phases: candidate.phases, globalStopConditions: candidate.globalStopConditions });
     } else {
       const created = createProfile({ name: candidate.name, phases: candidate.phases, globalStopConditions: candidate.globalStopConditions });
       selectProfile(created.id);
+      router.push(`/profiles/${created.id}`);
     }
-    router.push("/");
   };
 
   const lastPhase = phases[phases.length - 1];
@@ -737,8 +903,29 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
     setPhases(phases.map((p, i) => (i === index ? phase : p)));
   };
 
+  const applyAdvancedOverride = () => {
+    const result = importGaggiuinoProfile(advancedOverrideJson);
+    if (!result.profile) {
+      setAdvancedOverrideErrors(result.errors);
+      return;
+    }
+
+    setName(result.profile.name);
+    setPhases(result.profile.phases);
+    setCommandedPhases(result.profile.phases.map((phase) => ({ ...phase })));
+    setGlobalStop(result.profile.globalStopConditions);
+    setSelectedStepIndex(0);
+    setAdvancedOverrideErrors([]);
+    setAdvancedOverrideOpen(false);
+    toast({
+      title: "Advanced override imported",
+      description: `Loaded ${result.profile.phases.length} phases from pasted JSON.`,
+      durationMs: 2500,
+    });
+  };
+
   return (
-    <div className="container mx-auto max-w-7xl px-4 py-8 min-h-screen">
+    <div className="container mx-auto max-w-5xl px-4 py-8 min-h-screen xl:max-w-6xl">
       <div className="mb-6">
         <Button variant="ghost" onClick={() => router.push("/")} className="mb-4">
           <ArrowLeft className="mr-2 h-4 w-4" />
@@ -751,6 +938,57 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
           placeholder={profileId ? "Edit Profile" : "New Profile"}
           className="w-full border-b-2 border-border bg-transparent p-0 text-3xl font-bold outline-none placeholder:text-muted-foreground/50 focus:border-muted-foreground/50"
         />
+        <div className="mt-4 rounded-lg border">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+            onClick={() => setAdvancedOverrideOpen((open) => !open)}
+            aria-expanded={advancedOverrideOpen}
+          >
+            <div>
+              <div className="text-sm font-medium">Advanced override</div>
+              <div className="text-xs text-muted-foreground">
+                Paste raw Gaggiuino profile JSON and convert it into this editor format.
+              </div>
+            </div>
+            <ChevronDown className={cn("h-4 w-4 transition-transform", advancedOverrideOpen && "rotate-180")} />
+          </button>
+          {advancedOverrideOpen && (
+            <div className="space-y-3 border-t px-4 py-4">
+              <textarea
+                value={advancedOverrideJson}
+                onChange={(e) => setAdvancedOverrideJson(e.target.value)}
+                placeholder="Paste raw Gaggiuino profile JSON here"
+                className="min-h-[220px] w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+              {advancedOverrideErrors.length > 0 && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                  <div className="font-medium">Import validation failed</div>
+                  <ul className="mt-1 list-disc pl-5">
+                    {advancedOverrideErrors.map((error) => (
+                      <li key={error}>{error}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setAdvancedOverrideJson("");
+                    setAdvancedOverrideErrors([]);
+                  }}
+                >
+                  Clear
+                </Button>
+                <Button type="button" onClick={applyAdvancedOverride} disabled={advancedOverrideJson.trim().length === 0}>
+                  Import JSON
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Step sidebar | Phases carousel + Profile card */}

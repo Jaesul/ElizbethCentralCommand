@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { useFlowConnection } from "~/components/FlowConnectionProvider";
 import { FloatingConnectionIcon } from "~/components/FloatingConnectionIcon";
 import { ProfileSelector } from "~/components/ProfileSelector";
 import { ShotMonitoringDrawer } from "~/components/ShotMonitoringDrawer";
@@ -9,7 +10,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Badge } from "~/components/ui/badge";
 import { Slider } from "~/components/ui/slider";
 import { useWebSocket } from "~/hooks/useWebSocket";
-import { useFlowProfilingWebSocket } from "~/hooks/useFlowProfilingWebSocket";
 import type { UseFlowProfilingWebSocketReturn } from "~/hooks/useFlowProfilingWebSocket";
 import { useShotHistory } from "~/hooks/useShotHistory";
 import { useProfiles } from "~/hooks/useProfiles";
@@ -37,12 +37,7 @@ const getWebSocketUrl = () => {
   return "ws://shotstopper-ws.local:81";
 };
 
-// Flow profiling device (FlowProfilingArduino) WebSocket URL.
-const getFlowWebSocketUrl = () => {
-  const customUrl = process.env.NEXT_PUBLIC_FLOW_WS_URL;
-  if (customUrl) return customUrl;
-  return "ws://shotstopper-ws.local:81";
-};
+const FLOW_WS_URL = process.env.NEXT_PUBLIC_FLOW_WS_URL ?? "ws://shotstopper-ws.local:81";
 
 // Determine Pressure WebSocket URL - separate ESP32 for pressure reading (optional, only if explicitly configured)
 const getPressureWebSocketUrl = () => {
@@ -66,13 +61,11 @@ export function ShotStopperPage({
   const [isMounted, setIsMounted] = useState(false);
   const [wsUrl, setWsUrl] = useState("");
   const [pressureWsUrl, setPressureWsUrl] = useState("");
-  const [flowWsUrl, setFlowWsUrl] = useState("");
 
   useEffect(() => {
     setIsMounted(true);
     setWsUrl(getWebSocketUrl());
     setPressureWsUrl(getPressureWebSocketUrl());
-    setFlowWsUrl(getFlowWebSocketUrl());
   }, []);
   const [mockData, setMockData] = useState<ShotStopperData | null>(null);
   const [monitoringDrawerOpen, setMonitoringDrawerOpen] = useState(false);
@@ -93,14 +86,8 @@ export function ShotStopperPage({
     reconnectOnClose: true,
   });
 
-  // Flow profiling: use injected connection (e.g. from testing page) or create our own
-  const flowFromHook = useFlowProfilingWebSocket({
-    url: flowConnectionProp != null ? "" : (isTestingMode ? "" : flowWsUrl),
-    reconnectInterval: 5000,
-    reconnectOnClose: true,
-    maxLogs: 800,
-    includeRawJsonDuringShot: true,
-  });
+  // Flow profiling: use injected connection (e.g. from testing page) or the shared app connection
+  const flowFromContext = useFlowConnection();
   const {
     isConnected: flowConnected,
     error: flowError,
@@ -112,7 +99,7 @@ export function ShotStopperPage({
     sendCommand: flowSendCommand,
     sendRaw: flowSendRaw,
     reconnect: flowReconnect,
-  } = flowConnectionProp ?? flowFromHook;
+  } = flowConnectionProp ?? flowFromContext;
   const { points: flowPoints, phaseMarkers: flowPhaseMarkers, isActive: flowShotActive } = useFlowShotHistory(flowSensor, flowShot);
   const [flowLogCopyStatus, setFlowLogCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [flowCsvCopyStatus, setFlowCsvCopyStatus] = useState<"idle" | "copied" | "error">("idle");
@@ -146,6 +133,40 @@ export function ShotStopperPage({
       flowDeviceProfiles.slots.find((s) => s.index === flowDeviceProfiles.active) ??
       flowDeviceProfiles.slots.find((s) => s.isActive) ??
       flowDeviceProfiles.slots[flowDeviceProfiles.active];
+
+    // Helpful debug to see what the ESP thinks is active vs what we're rendering.
+    // This logs whenever PROFILES changes or the normalized activeDeviceProfile name changes.
+    // Example output:
+    // [FlowProfiles] activeIndex=2 slotIndex=2 name="Blooming"
+    // [FlowProfiles] rawSlotProfile= {...original JSON from ESP...}
+    if (activeSlot) {
+      // eslint-disable-next-line no-console
+      console.log(
+        "[FlowProfiles] Active slot from ESP",
+        {
+          activeIndex: flowDeviceProfiles.active,
+          slotIndex: activeSlot.index,
+          slotName: activeSlot.name,
+          normalizedName: activeDeviceProfile?.name,
+        }
+      );
+      try {
+        if (activeSlot.profile?.trim()) {
+          const raw = JSON.parse(activeSlot.profile);
+          // eslint-disable-next-line no-console
+          console.log("[FlowProfiles] rawSlotProfile", raw);
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("[FlowProfiles] Failed to parse active slot profile JSON", e);
+      }
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(
+        "[FlowProfiles] No active slot resolved from PROFILES",
+        { activeIndex: flowDeviceProfiles.active, slots: flowDeviceProfiles.slots }
+      );
+    }
   }, [flowDeviceProfiles, activeDeviceProfile?.name]);
 
   const buildPressureCsv = () => {
@@ -334,7 +355,7 @@ export function ShotStopperPage({
   const mergedShotHistoryForDrawer = shotHistory;
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-6xl">
+    <div className="container mx-auto max-w-5xl px-4 py-8 xl:max-w-6xl">
       <div className="mb-8">
         <div className="flex items-center justify-between mb-2">
           <div>
@@ -444,7 +465,7 @@ export function ShotStopperPage({
             </div>
 
             <div className="text-xs text-muted-foreground">
-              WS: <code>{flowWsUrl}</code> (override with <code>NEXT_PUBLIC_FLOW_WS_URL</code>)
+              WS: <code>{FLOW_WS_URL}</code> (override with <code>NEXT_PUBLIC_FLOW_WS_URL</code>)
             </div>
 
             <div className="flex flex-wrap items-center gap-2">

@@ -1,23 +1,18 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useLayoutEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
+import { useFlowConnection } from "~/components/FlowConnectionProvider";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { PhaseProfileGraph } from "~/components/PhaseProfileGraph";
 import { LiveTelemetryChart } from "~/components/LiveTelemetryChart";
-import { useFlowProfilingWebSocket } from "~/hooks/useFlowProfilingWebSocket";
 import { useFlowShotHistory } from "~/hooks/useFlowShotHistory";
+import { useToast } from "~/components/ui/use-toast";
 import { normalizeProfileForGraph } from "~/lib/profileUtils";
 import { PROFILE_COLORS } from "~/lib/profileColors";
 import type { PhaseProfile } from "~/types/profiles";
-
-const getFlowWebSocketUrl = () => {
-  const customUrl = process.env.NEXT_PUBLIC_FLOW_WS_URL;
-  if (customUrl) return customUrl;
-  return "ws://shotstopper-ws.local:81";
-};
 
 const LIVE_COLORS = {
   pressure: PROFILE_COLORS.pressure,
@@ -54,26 +49,17 @@ function MetricRow({
 
 export function ProfileBrewPage({ profileId }: { profileId: string }) {
   const router = useRouter();
-  const [flowWsUrl, setFlowWsUrl] = useState("");
-
-  useEffect(() => {
-    setFlowWsUrl(getFlowWebSocketUrl());
-  }, []);
+  const { toast } = useToast();
 
   const {
     isConnected: flowConnected,
     deviceProfiles: flowDeviceProfiles,
     sensor: flowSensor,
     shot: flowShot,
+    logs: flowLogs,
     sendRaw: flowSendRaw,
     sendCommand: flowSendCommand,
-  } = useFlowProfilingWebSocket({
-    url: flowWsUrl,
-    reconnectInterval: 5000,
-    reconnectOnClose: true,
-    maxLogs: 200,
-    requestProfileOnConnect: true,
-  });
+  } = useFlowConnection();
 
   const { points: livePoints, phaseMarkers } = useFlowShotHistory(flowSensor, flowShot);
 
@@ -108,33 +94,128 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
     flowSendRaw(cmd);
     // Refetch profiles so UI shows updated active slot
     setTimeout(() => flowSendRaw("PROFILES"), 300);
-  }, [slotIndex, flowSendRaw, flowConnected]);
+    toast({
+      title: "Default profile updated",
+      description: `“${profile?.name ?? `Slot ${slotIndex}`}” was set as the default profile.`,
+      durationMs: 2000,
+    });
+  }, [slotIndex, flowSendRaw, toast, profile?.name]);
 
   const handleBrew = useCallback(() => {
-    flowSendCommand("GO");
-  }, [flowSendCommand]);
+    if (slotIndex == null) return;
 
-  const [stopClickedOptimistic, setStopClickedOptimistic] = useState(false);
+    const startShot = () => {
+      flowSendCommand("GO");
+      setTimeout(() => flowSendRaw("PROFILES"), 300);
+    };
+
+    if (flowDeviceProfiles?.active === slotIndex) {
+      startShot();
+      return;
+    }
+
+    flowSendRaw(`SET_ACTIVE ${slotIndex}`);
+    setTimeout(startShot, 150);
+  }, [flowDeviceProfiles?.active, flowSendCommand, flowSendRaw, slotIndex]);
+
+  const [brewState, setBrewState] = useState<"idle" | "starting" | "brewing" | "stopping">("idle");
 
   const handleStop = useCallback(() => {
     flowSendCommand("STOP");
-    setStopClickedOptimistic(true);
+    setBrewState("stopping");
   }, [flowSendCommand]);
 
   useEffect(() => {
-    if (flowSensor?.brewActive === false) setStopClickedOptimistic(false);
+    if (flowSensor?.brewActive === true) {
+      setBrewState("brewing");
+      return;
+    }
+
+    if (flowSensor?.brewActive === false) {
+      setBrewState("idle");
+    }
   }, [flowSensor?.brewActive]);
 
-  const isBrewing = !stopClickedOptimistic && (flowSensor?.brewActive ?? false);
+  useEffect(() => {
+    const lastLog = flowLogs.at(-1);
+    if (lastLog?.includes("[shot] STOP")) {
+      setBrewState("idle");
+    }
+  }, [flowLogs]);
+
+  const isBrewing = brewState !== "idle";
+
+  const handleEditProfile = useCallback(() => {
+    if (!profile) return;
+    const initial = {
+      id: profile.id,
+      name: profile.name,
+      phases: profile.phases,
+      globalStopConditions: profile.globalStopConditions,
+    };
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem("elizbeth-profile-edit-initial", JSON.stringify(initial));
+    }
+    router.push("/profiles/new");
+  }, [profile, router]);
 
   const pressure = flowShot?.pressure ?? flowSensor?.pressure;
   const pumpFlow = flowShot?.pumpFlow ?? flowSensor?.pumpFlow;
   const weightFlow = flowShot?.weightFlow ?? flowSensor?.weightFlow;
   const weight = flowShot?.shotWeight ?? flowSensor?.weight;
+  const showTelemetryFirst = isBrewing;
+  const profileCardRef = useRef<HTMLDivElement | null>(null);
+  const telemetryCardRef = useRef<HTMLDivElement | null>(null);
+  const previousCardTopsRef = useRef<{ profile?: number; telemetry?: number }>({});
+
+  useLayoutEffect(() => {
+    const cards = [
+      { key: "profile" as const, element: profileCardRef.current },
+      { key: "telemetry" as const, element: telemetryCardRef.current },
+    ];
+
+    for (const { key, element } of cards) {
+      if (!element) continue;
+      const currentTop = element.getBoundingClientRect().top;
+      const previousTop = previousCardTopsRef.current[key];
+
+      if (previousTop != null) {
+        const deltaY = previousTop - currentTop;
+        if (Math.abs(deltaY) > 1) {
+          element.style.position = "relative";
+          element.style.zIndex = key === "telemetry" && showTelemetryFirst ? "2" : "1";
+
+          const animation = element.animate(
+            [
+              {
+                transform: `translateY(${deltaY}px) scale(0.985)`,
+                opacity: 0.92,
+              },
+              {
+                transform: "translateY(0) scale(1)",
+                opacity: 1,
+              },
+            ],
+            {
+              duration: 380,
+              easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+            }
+          );
+
+          animation.onfinish = () => {
+            element.style.position = "";
+            element.style.zIndex = "";
+          };
+        }
+      }
+
+      previousCardTopsRef.current[key] = currentTop;
+    }
+  }, [showTelemetryFirst]);
 
   if (!profile) {
     return (
-      <div className="container mx-auto max-w-6xl px-4 py-8">
+      <div className="container mx-auto max-w-5xl px-4 py-8 xl:max-w-6xl">
         <Button variant="ghost" onClick={() => router.push("/")} className="mb-4 cursor-pointer">
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back
@@ -164,90 +245,100 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
   }
 
   return (
-    <div className="container mx-auto max-w-7xl px-4 py-8 min-h-screen">
+    <div className="container mx-auto max-w-5xl px-4 py-8 min-h-screen xl:max-w-6xl">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-        <Button variant="ghost" onClick={() => router.push("/")} className="cursor-pointer">
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back
-        </Button>
-        <h1 className="text-2xl font-bold truncate">{profile.name}</h1>
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" onClick={() => router.push("/")} className="cursor-pointer">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back
+          </Button>
+          <h1 className="text-2xl font-bold truncate">{profile.name}</h1>
+        </div>
         <div className="flex gap-2">
+          <Button variant="outline" onClick={handleEditProfile} className="cursor-pointer">
+            Edit
+          </Button>
           <Button variant="outline" onClick={handleSetAsDefault} disabled={!flowConnected} className="cursor-pointer">
             Set as default
           </Button>
-          <Button onClick={handleBrew} disabled={!flowConnected || isBrewing} className="cursor-pointer">
-            Brew
+          <Button onClick={() => {
+            setBrewState("starting");
+            handleBrew();
+          }} disabled={!flowConnected || isBrewing} className="cursor-pointer">
+            {brewState === "starting" ? "Starting..." : brewState === "brewing" ? "Brewing" : brewState === "stopping" ? "Stopping..." : "Brew"}
           </Button>
           <Button
             variant="destructive"
             onClick={handleStop}
-            disabled={!flowConnected || !isBrewing}
+            disabled={!flowConnected || brewState !== "starting" && brewState !== "brewing"}
             className="cursor-pointer"
           >
-            Stop
+            {brewState === "stopping" ? "Stopping..." : "Stop"}
           </Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[280px_1fr]">
-        <aside className="space-y-3">
-          <Card>
-            <CardContent className="pt-4">
-              <h2 className="text-sm font-semibold mb-3">Live metrics</h2>
-              <div className="space-y-2">
-                <MetricRow
-                  label="Pressure"
-                  value={pressure}
-                  unit="bar"
-                  color={LIVE_COLORS.pressure}
-                />
-                <MetricRow
-                  label="Pump flow"
-                  value={pumpFlow}
-                  unit="ml/s"
-                  color={LIVE_COLORS.pumpFlow}
-                />
-                <MetricRow
-                  label="Weight flow"
-                  value={weightFlow}
-                  unit="g/s"
-                  color={LIVE_COLORS.weightFlow}
-                />
-                <MetricRow
-                  label="Weight"
-                  value={weight}
-                  unit="g"
-                  color={LIVE_COLORS.weight}
-                />
-              </div>
-            </CardContent>
-          </Card>
-          {!flowConnected && (
-            <p className="text-xs text-muted-foreground">
-              Connect to device to see live data and brew.
-            </p>
-          )}
-        </aside>
-
-        <div className="min-w-0 space-y-6">
-          <Card>
+      <div className="flex flex-col gap-6">
+        <div
+          ref={profileCardRef}
+          className={showTelemetryFirst ? "order-2 will-change-transform" : "order-1 will-change-transform"}
+        >
+          <Card className="transition-all duration-300 ease-out">
             <CardHeader className="pb-2">
               <CardTitle className="text-lg">Profile</CardTitle>
             </CardHeader>
             <CardContent className="pt-0">
-              <PhaseProfileGraph profile={profile} height={380} />
+              <PhaseProfileGraph profile={profile} height={showTelemetryFirst ? 320 : 380} />
             </CardContent>
           </Card>
-          <Card>
+        </div>
+        <div
+          ref={telemetryCardRef}
+          className={showTelemetryFirst ? "order-1 will-change-transform" : "order-2 will-change-transform"}
+        >
+          <Card className={showTelemetryFirst ? "border-primary/40 shadow-md transition-all duration-300 ease-out" : "transition-all duration-300 ease-out"}>
             <CardHeader className="pb-2">
               <CardTitle className="text-lg">Live telemetry</CardTitle>
             </CardHeader>
-            <CardContent className="pt-0">
-              <LiveTelemetryChart
-                points={livePoints}
-                phaseMarkers={phaseMarkers}
-                height={360}
-              />
+            <CardContent className="pt-0 space-y-4">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
+                <div className="space-y-2">
+                  <MetricRow
+                    label="Pressure"
+                    value={pressure}
+                    unit="bar"
+                    color={LIVE_COLORS.pressure}
+                  />
+                  <MetricRow
+                    label="Pump flow"
+                    value={pumpFlow}
+                    unit="ml/s"
+                    color={LIVE_COLORS.pumpFlow}
+                  />
+                  <MetricRow
+                    label="Weight flow"
+                    value={weightFlow}
+                    unit="g/s"
+                    color={LIVE_COLORS.weightFlow}
+                  />
+                  <MetricRow
+                    label="Weight"
+                    value={weight}
+                    unit="g"
+                    color={LIVE_COLORS.weight}
+                  />
+                  {!flowConnected && (
+                    <p className="pt-1 text-xs text-muted-foreground">
+                      Connect to device to see live data and brew.
+                    </p>
+                  )}
+                </div>
+                <LiveTelemetryChart
+                  points={livePoints}
+                  phaseMarkers={phaseMarkers}
+                  height={showTelemetryFirst ? 420 : 360}
+                />
+              </div>
             </CardContent>
           </Card>
         </div>

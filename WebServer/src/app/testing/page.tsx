@@ -1,32 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useFlowConnection } from "~/components/FlowConnectionProvider";
 import { ShotStopperPage } from "~/components/ShotStopperPage";
 import { PhaseProfileGraph } from "~/components/PhaseProfileGraph";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
-import { useFlowProfilingWebSocket } from "~/hooks/useFlowProfilingWebSocket";
 import { normalizeProfileForGraph } from "~/lib/profileUtils";
 
-const getFlowWebSocketUrl = () => {
-  const customUrl = process.env.NEXT_PUBLIC_FLOW_WS_URL;
-  if (customUrl) return customUrl;
-  return "ws://shotstopper-ws.local:81";
-};
-
 export default function TestingPage() {
-  const [flowWsUrl, setFlowWsUrl] = useState("");
-  useEffect(() => {
-    setFlowWsUrl(getFlowWebSocketUrl());
-  }, []);
-
-  const flow = useFlowProfilingWebSocket({
-    url: flowWsUrl,
-    reconnectInterval: 5000,
-    reconnectOnClose: true,
-    maxLogs: 800,
-    includeRawJsonDuringShot: true,
-    requestProfileOnConnect: true,
-  });
+  const flow = useFlowConnection();
 
   const profileForGraph =
     flow.espProfile != null

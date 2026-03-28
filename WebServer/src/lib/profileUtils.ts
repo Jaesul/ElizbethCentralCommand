@@ -200,6 +200,12 @@ export function normalizeProfileForGraph(profile: {
     const normalizedStart: number | undefined =
       start == null || start === -1 ? undefined : start;
 
+    const rawStop = (p.stopConditions as PhaseStopConditions) ?? {};
+    const normalizedStop: PhaseStopConditions = { ...rawStop };
+    if (typeof rawStop.time === "number" && rawStop.time > 0) {
+      normalizedStop.time = toSeconds(rawStop.time);
+    }
+
     return {
       type: p.type === "FLOW" ? "FLOW" : "PRESSURE",
       target: {
@@ -215,7 +221,7 @@ export function normalizeProfileForGraph(profile: {
         time: toSeconds(target.time),
       },
       restriction: typeof p.restriction === "number" ? p.restriction : 0,
-      stopConditions: (p.stopConditions as PhaseStopConditions) ?? {},
+      stopConditions: normalizedStop,
     };
   });
 
@@ -233,14 +239,133 @@ export function normalizeProfileForGraph(profile: {
   };
 }
 
+type RawImportPhase = {
+  type?: unknown;
+  target?: {
+    start?: unknown;
+    end?: unknown;
+    curve?: unknown;
+    time?: unknown;
+  };
+  restriction?: unknown;
+  stopConditions?: Record<string, unknown>;
+};
+
+type RawImportProfile = {
+  name?: unknown;
+  phases?: unknown;
+  globalStopConditions?: unknown;
+};
+
+export function importGaggiuinoProfile(rawJson: string): { profile?: PhaseProfile; errors: string[] } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    return { errors: ["Invalid JSON. Paste a valid Gaggiuino profile object."] };
+  }
+
+  if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { errors: ["Profile must be a JSON object."] };
+  }
+
+  const raw = parsed as RawImportProfile;
+  const errors: string[] = [];
+
+  if (typeof raw.name !== "string" || raw.name.trim().length === 0) {
+    errors.push("`name` must be a non-empty string.");
+  }
+
+  if (!Array.isArray(raw.phases) || raw.phases.length === 0) {
+    errors.push("`phases` must be a non-empty array.");
+  }
+
+  if (raw.globalStopConditions == null || typeof raw.globalStopConditions !== "object" || Array.isArray(raw.globalStopConditions)) {
+    errors.push("`globalStopConditions` must be an object.");
+  }
+
+  const phases = Array.isArray(raw.phases) ? raw.phases : [];
+  phases.forEach((phase, index) => {
+    if (phase == null || typeof phase !== "object" || Array.isArray(phase)) {
+      errors.push(`Phase ${index + 1} must be an object.`);
+      return;
+    }
+
+    const p = phase as RawImportPhase;
+    if (p.type !== "PRESSURE" && p.type !== "FLOW") {
+      errors.push(`Phase ${index + 1}: \`type\` must be PRESSURE or FLOW.`);
+    }
+
+    if (p.target == null || typeof p.target !== "object" || Array.isArray(p.target)) {
+      errors.push(`Phase ${index + 1}: \`target\` must be an object.`);
+    } else {
+      if (typeof p.target.end !== "number" || !Number.isFinite(p.target.end)) {
+        errors.push(`Phase ${index + 1}: \`target.end\` must be a number.`);
+      }
+      if (
+        p.target.curve !== "INSTANT" &&
+        p.target.curve !== "LINEAR" &&
+        p.target.curve !== "EASE_IN" &&
+        p.target.curve !== "EASE_OUT" &&
+        p.target.curve !== "EASE_IN_OUT"
+      ) {
+        errors.push(`Phase ${index + 1}: \`target.curve\` must be a supported curve.`);
+      }
+      if (p.target.time != null && (typeof p.target.time !== "number" || !Number.isFinite(p.target.time))) {
+        errors.push(`Phase ${index + 1}: \`target.time\` must be a number when provided.`);
+      }
+      if (p.target.start != null && (typeof p.target.start !== "number" || !Number.isFinite(p.target.start))) {
+        errors.push(`Phase ${index + 1}: \`target.start\` must be a number when provided.`);
+      }
+    }
+
+    if (typeof p.restriction !== "number" || !Number.isFinite(p.restriction)) {
+      errors.push(`Phase ${index + 1}: \`restriction\` must be a number.`);
+    }
+
+    if (p.stopConditions == null || typeof p.stopConditions !== "object" || Array.isArray(p.stopConditions)) {
+      errors.push(`Phase ${index + 1}: \`stopConditions\` must be an object.`);
+    }
+  });
+
+  if (errors.length > 0) {
+    return { errors };
+  }
+
+  const normalized = normalizeProfileForGraph({
+    id: "imported-gaggiuino-profile",
+    name: raw.name as string,
+    phases: phases as Array<{
+      type?: "PRESSURE" | "FLOW";
+      target?: { start?: number; end?: number; curve?: string; time?: number };
+      restriction?: number;
+      stopConditions?: Record<string, number>;
+    }>,
+    globalStopConditions: raw.globalStopConditions as Record<string, number>,
+  });
+
+  const profileErrors = validatePhaseProfile(normalized);
+  if (profileErrors.length > 0) {
+    return { errors: profileErrors };
+  }
+
+  return { profile: normalized, errors: [] };
+}
+
 /**
  * Estimate phase duration in seconds for graphing.
- * Uses the phase's target time only; stop conditions are for runtime safety/firmware,
- * not for shaping the editor graph.
+ * Prefer the explicit target transition time.
+ * If a phase has no target time but does have a time stop condition, use that.
+ * Otherwise default to 5 seconds so pressure/flow-only stop phases still render on the graph.
  */
 function getPhaseDurationSec(phase: Phase): number {
-  const timeSec = phase.target.time ?? 5;
-  return timeSec;
+  const targetTimeSec = phase.target.time ?? 0;
+  if (targetTimeSec > 0) return targetTimeSec;
+
+  const stopTimeSec = phase.stopConditions.time ?? 0;
+  if (stopTimeSec > 0) return stopTimeSec;
+
+  return 5;
 }
 
 /**
@@ -308,8 +433,11 @@ export function generatePhaseProfileGraphData(profile: PhaseProfile): PhaseGraph
     const endPressure = phase.type === "PRESSURE" ? phase.target.end : phase.restriction;
     const endFlow = phase.type === "PRESSURE" ? phase.restriction : phase.target.end;
 
-    // Get start values for phase i+1
-    const nextStartVal = nextPhase.target.start ?? nextPhase.target.end;
+    // For instant phases, the boundary value shown on the graph is target.end immediately.
+    const nextStartVal =
+      nextPhase.target.curve === "INSTANT"
+        ? nextPhase.target.end
+        : (nextPhase.target.start ?? nextPhase.target.end);
     const nextStartPressure = nextPhase.type === "PRESSURE" ? nextStartVal : nextPhase.restriction;
     const nextStartFlow = nextPhase.type === "PRESSURE" ? nextPhase.restriction : nextStartVal;
 

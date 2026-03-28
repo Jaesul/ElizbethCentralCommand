@@ -110,7 +110,10 @@ export function PhaseProfileGraph({ profile, height = 300, inline = false }: Pha
   }, [chartKey]);
 
   const chartContent = (
-    <div className="relative w-full" style={{ height: `${height}px`, minHeight: `${height}px` }}>
+    <div
+      className={`relative w-full ${inline ? "cursor-pointer" : ""}`}
+      style={{ height: `${height}px`, minHeight: `${height}px` }}
+    >
       {isRecalculating && (
         <div
           className="absolute inset-0 z-10 flex flex-col gap-3 rounded-lg border border-border/50 bg-card/80 p-4"
@@ -129,8 +132,8 @@ export function PhaseProfileGraph({ profile, height = 300, inline = false }: Pha
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
             data={data}
-          margin={{ top: 44, right: 10, left: 0, bottom: 20 }}
-        >
+            margin={{ top: inline ? 10 : 44, right: 10, left: 0, bottom: 20 }}
+          >
         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
         {boundaryTimes.map((t) => (
           <ReferenceLine
@@ -148,58 +151,67 @@ export function PhaseProfileGraph({ profile, height = 300, inline = false }: Pha
           type="number"
           domain={[0, maxTimeVal]}
           tickFormatter={(v) => `${v.toFixed(0)}`}
-          label={{ value: "Time (s)", position: "insideBottom", offset: -5 }}
+          label={inline ? undefined : { value: "Time (s)", position: "insideBottom", offset: -5 }}
         />
         <YAxis
           yAxisId="primary"
           type="number"
           domain={[0, 12]}
+          width={inline ? 28 : 60}
           tickFormatter={(v) => `${Number(v).toFixed(0)}`}
-          label={{ value: "Pressure (bar), Flow (ml/s)", angle: -90, position: "insideLeft", dy: 70 }}
+          label={
+            inline
+              ? undefined
+              : { value: "Pressure (bar), Flow (ml/s)", angle: -90, position: "insideLeft", dy: 70 }
+          }
         />
-        <Legend
-          payload={legendDedup}
-          wrapperStyle={{ paddingTop: 20 }}
-          content={({ payload }) => (
-            <div className="flex flex-wrap justify-center gap-x-6 gap-y-1">
-              {payload?.map((entry: { value?: string; color?: string; strokeDasharray?: string }, i: number) => (
-                <span key={i} className="text-xs text-foreground inline-flex items-center gap-1.5">
-                  <svg width="14" height="3" className="flex-shrink-0">
-                    <line
-                      x1="0"
-                      y1="1.5"
-                      x2="14"
-                      y2="1.5"
-                      stroke={entry.color ?? "currentColor"}
-                      strokeWidth="2"
-                      strokeDasharray={entry.strokeDasharray}
-                    />
-                  </svg>
-                  {entry.value}
-                </span>
-              ))}
-            </div>
-          )}
-        />
-        <Tooltip
-          content={({ active, payload }) => {
-            if (!active || !payload?.length) return null;
-            const point = payload[0]?.payload as PhaseGraphPoint;
-            const entries = Object.entries(point).filter(
-              ([k, v]) => k !== "time" && k !== "phaseIndex" && typeof v === "number"
-            );
-            return (
-              <div className="rounded-md border bg-background px-3 py-2 text-sm shadow-md">
-                <p className="text-xs text-muted-foreground">{point.time.toFixed(1)}s</p>
-                {entries.map(([k, v]) => (
-                  <p key={k} className="text-sm">
-                    {k}: {typeof v === "number" ? v.toFixed(1) : v}
-                  </p>
+        {!inline && (
+          <Legend
+            payload={legendDedup}
+            wrapperStyle={{ paddingTop: 20 }}
+            content={({ payload }) => (
+              <div className="flex flex-wrap justify-center gap-x-6 gap-y-1">
+                {payload?.map((entry: { value?: string; color?: string; strokeDasharray?: string }, i: number) => (
+                  <span key={i} className="text-xs text-foreground inline-flex items-center gap-1.5">
+                    <svg width="14" height="3" className="flex-shrink-0">
+                      <line
+                        x1="0"
+                        y1="1.5"
+                        x2="14"
+                        y2="1.5"
+                        stroke={entry.color ?? "currentColor"}
+                        strokeWidth="2"
+                        strokeDasharray={entry.strokeDasharray}
+                      />
+                    </svg>
+                    {entry.value}
+                  </span>
                 ))}
               </div>
-            );
-          }}
-        />
+            )}
+          />
+        )}
+        {!inline && (
+          <Tooltip
+            content={({ active, payload }) => {
+              if (!active || !payload?.length) return null;
+              const point = payload[0]?.payload as PhaseGraphPoint;
+              const entries = Object.entries(point).filter(
+                ([k, v]) => k !== "time" && k !== "phaseIndex" && typeof v === "number"
+              );
+              return (
+                <div className="rounded-md border bg-background px-3 py-2 text-sm shadow-md">
+                  <p className="text-xs text-muted-foreground">{point.time.toFixed(1)}s</p>
+                  {entries.map(([k, v]) => (
+                    <p key={k} className="text-sm">
+                      {k}: {typeof v === "number" ? v.toFixed(1) : v}
+                    </p>
+                  ))}
+                </div>
+              );
+            }}
+          />
+        )}
         {visibleLines.map((def) => (
           <Line
             key={def.dataKey}
@@ -211,7 +223,7 @@ export function PhaseProfileGraph({ profile, height = 300, inline = false }: Pha
             strokeWidth={def.strokeWidth}
             strokeDasharray={def.strokeDasharray}
             dot={false}
-            connectNulls={def.connectNulls !== false}
+            connectNulls={def.connectNulls === true}
             isAnimationActive={false}
           />
         ))}
