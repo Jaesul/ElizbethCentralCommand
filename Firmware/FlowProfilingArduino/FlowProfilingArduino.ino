@@ -176,10 +176,46 @@ AcaiaArduinoBLE scale(false);
 
 static constexpr float FLOW_ALPHA = 0.25f;
 static constexpr float FLOW_DEADBAND_G = 0.03f;
+static constexpr uint32_t SCALE_RETRY_INTERVAL_MS = 3000;
+
+volatile bool scaleInitInProgress = false;
+TaskHandle_t scaleInitTaskHandle = nullptr;
+uint32_t lastScaleRetryMs = 0;
 
 float lastWeight = NAN;
 uint32_t lastWeightMs = 0;
 float weightFlowEma = 0.0f;
+
+static void scaleInitTask(void* /*param*/) {
+  scale.init();
+  scaleInitInProgress = false;
+  scaleInitTaskHandle = nullptr;
+  vTaskDelete(nullptr);
+}
+
+static void maybeStartScaleInit(uint32_t nowMs) {
+  if (scaleInitInProgress || scaleInitTaskHandle != nullptr) return;
+  if (nowMs - lastScaleRetryMs < SCALE_RETRY_INTERVAL_MS) return;
+
+  lastScaleRetryMs = nowMs;
+  scaleInitInProgress = true;
+  BaseType_t result = xTaskCreatePinnedToCore(
+    scaleInitTask,
+    "scaleInit",
+    8192,
+    nullptr,
+    1,
+    &scaleInitTaskHandle,
+    tskNO_AFFINITY
+  );
+  if (result != pdPASS) {
+    scaleInitInProgress = false;
+    scaleInitTaskHandle = nullptr;
+    Serial.println("[scale] init task start failed");
+  } else {
+    Serial.println("[scale] init task started");
+  }
+}
 
 static void tareScaleForShotStart() {
   if (!scale.isConnected()) {
@@ -973,13 +1009,11 @@ void loop() {
     webSocket.loop();
   }
 
-  // Keep scale connected
-  if (!scale.isConnected()) {
-    static uint32_t lastRetry = 0;
-    if (nowMs - lastRetry > 3000) {
-      lastRetry = nowMs;
-      scale.init();
-    }
+  // Keep scale connected without blocking the main loop.
+  if (scaleInitInProgress) {
+    currentState.scalesPresent = false;
+  } else if (!scale.isConnected()) {
+    maybeStartScaleInit(nowMs);
     currentState.scalesPresent = false;
   } else {
     currentState.scalesPresent = true;
@@ -1001,7 +1035,7 @@ void loop() {
     currentState.smoothedPressure = currentState.pressure;
   }
 
-  if (scale.isConnected() && scale.newWeightAvailable()) {
+  if (!scaleInitInProgress && scale.isConnected() && scale.newWeightAvailable()) {
     const float w = scale.getWeight();
     currentState.weight = w;
     currentState.shotWeight = w;
