@@ -947,13 +947,6 @@ void setup() {
   // Initialize Gaggiuino pump model scaling
   pumpInit(60, FLOW_PER_CLICK_AT_ZERO_BAR_DEFAULT);
 
-  // BLE scale
-  BLE.begin();
-  scale.init();
-  scale.tare();
-  delay(100);
-  scale.tare();
-
   // Load profiles from NVS (or defaults), then apply active profile.
   profilesStorageInit();
   loadActiveProfileIntoRuntime();
@@ -964,6 +957,10 @@ void setup() {
     initMDNS();
     initWebSocket();
   }
+
+  // Bring up BLE after the network stack so the ESP remains reachable even when
+  // the scale is offline. The loop() retry path will handle connecting later.
+  BLE.begin();
 
   setPumpPowerX10(IDLE_PUMP_POWER_X10);
   wsLog("Ready. Send 'GO' via WebSocket (or Serial) to run the hardcoded JSON profile.");

@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { useFlowConnection } from "~/components/FlowConnectionProvider";
-import { FloatingConnectionIcon } from "~/components/FloatingConnectionIcon";
 import { ProfileSelector } from "~/components/ProfileSelector";
 import { ShotMonitoringDrawer } from "~/components/ShotMonitoringDrawer";
 import { Drawer } from "~/components/ui/drawer";
@@ -90,17 +89,26 @@ export function ShotStopperPage({
   const flowFromContext = useFlowConnection();
   const {
     isConnected: flowConnected,
+    connectionState: flowConnectionState,
     error: flowError,
+    lastMessageAgeMs: flowLastMessageAgeMs,
     sensor: flowSensor,
     shot: flowShot,
     logs: flowLogs,
     rawJson: flowRawJson,
     deviceProfiles: flowDeviceProfiles,
+    refreshStatus: flowRefreshStatus,
     sendCommand: flowSendCommand,
     sendRaw: flowSendRaw,
     reconnect: flowReconnect,
   } = flowConnectionProp ?? flowFromContext;
-  const { points: flowPoints, phaseMarkers: flowPhaseMarkers, isActive: flowShotActive } = useFlowShotHistory(flowSensor, flowShot);
+  const isFlowFresh = flowConnected && flowConnectionState === "connected";
+  const { points: flowPoints, phaseMarkers: flowPhaseMarkers, isActive: flowShotActive } = useFlowShotHistory(
+    flowSensor,
+    flowShot,
+    10000,
+    isFlowFresh,
+  );
   const [flowLogCopyStatus, setFlowLogCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [flowCsvCopyStatus, setFlowCsvCopyStatus] = useState<"idle" | "copied" | "error">("idle");
 
@@ -119,7 +127,7 @@ export function ShotStopperPage({
       return normalizeProfileForGraph({
         ...raw,
         id: `device-slot-${activeSlot.index}`,
-        name: activeSlot.name || raw.name || `Slot ${activeSlot.index}`,
+        name: activeSlot.name ?? raw.name ?? `Slot ${activeSlot.index}`,
       });
     } catch {
       return null;
@@ -152,7 +160,7 @@ export function ShotStopperPage({
       );
       try {
         if (activeSlot.profile?.trim()) {
-          const raw = JSON.parse(activeSlot.profile);
+          const raw: unknown = JSON.parse(activeSlot.profile);
           // eslint-disable-next-line no-console
           console.log("[FlowProfiles] rawSlotProfile", raw);
         }
@@ -394,8 +402,16 @@ export function ShotStopperPage({
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
               <span>Flow Profiling</span>
-              <Badge variant={flowConnected ? "default" : "secondary"}>
-                {flowConnected ? "Connected" : "Disconnected"}
+              <Badge variant={isFlowFresh ? "default" : flowConnectionState === "stale" ? "secondary" : "destructive"}>
+                {flowConnectionState === "connected"
+                  ? "Connected"
+                  : flowConnectionState === "stale"
+                    ? "Stale"
+                    : flowConnectionState === "reconnecting"
+                      ? "Reconnecting"
+                      : flowConnectionState === "connecting"
+                        ? "Connecting"
+                        : "Disconnected"}
               </Badge>
             </CardTitle>
           </CardHeader>
@@ -409,14 +425,20 @@ export function ShotStopperPage({
               </div>
             )}
 
+            {flowConnectionState === "stale" && (
+              <div className="text-sm text-muted-foreground">
+                Flow telemetry is stale{flowLastMessageAgeMs != null ? ` (${Math.round(flowLastMessageAgeMs / 1000)}s old)` : ""}. The UI is keeping the last values visible until the ESP responds again.
+              </div>
+            )}
+
             <div className="flex flex-wrap gap-2">
-              <Button onClick={() => flowSendCommand("GO")} disabled={!flowConnected}>
+              <Button onClick={() => flowSendCommand("GO")} disabled={!isFlowFresh}>
                 GO
               </Button>
-              <Button onClick={() => flowSendCommand("STOP")} disabled={!flowConnected} variant="destructive">
+              <Button onClick={() => flowSendCommand("STOP")} disabled={!isFlowFresh} variant="destructive">
                 STOP
               </Button>
-              <Button onClick={() => flowSendCommand("STATUS")} disabled={!flowConnected} variant="outline">
+              <Button onClick={() => flowRefreshStatus("testing-panel")} disabled={!flowConnected} variant="outline">
                 STATUS
               </Button>
             </div>
@@ -472,8 +494,8 @@ export function ShotStopperPage({
               <Button variant="outline" size="sm" onClick={() => flowSendRaw("PROFILES")} disabled={!flowConnected}>
                 Send PROFILES
               </Button>
-              <Button variant="outline" size="sm" onClick={() => flowSendRaw("STATUS")} disabled={!flowConnected}>
-                Send STATUS
+              <Button variant="outline" size="sm" onClick={() => flowRefreshStatus("testing-panel-manual")} disabled={!flowConnected}>
+                Refresh Status
               </Button>
               <span className="text-xs text-muted-foreground">Replies appear in Device log below.</span>
             </div>

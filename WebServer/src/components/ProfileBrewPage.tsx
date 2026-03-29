@@ -53,15 +53,24 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
 
   const {
     isConnected: flowConnected,
+    connectionState,
+    lastMessageAgeMs,
     deviceProfiles: flowDeviceProfiles,
     sensor: flowSensor,
     shot: flowShot,
     logs: flowLogs,
+    refreshStatus,
     sendRaw: flowSendRaw,
     sendCommand: flowSendCommand,
   } = useFlowConnection();
 
-  const { points: livePoints, phaseMarkers } = useFlowShotHistory(flowSensor, flowShot);
+  const isConnectionFresh = flowConnected && connectionState === "connected";
+  const { points: livePoints, phaseMarkers } = useFlowShotHistory(
+    flowSensor,
+    flowShot,
+    10000,
+    isConnectionFresh,
+  );
 
   const profile: PhaseProfile | null = useMemo(() => {
     if (!flowDeviceProfiles?.slots?.length || !profileId) return null;
@@ -76,7 +85,7 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
       return normalizeProfileForGraph({
         ...raw,
         id: `device-slot-${slot.index}`,
-        name: slot.name || raw.name || `Slot ${slot.index}`,
+        name: slot.name ?? raw.name ?? `Slot ${slot.index}`,
       });
     } catch {
       return null;
@@ -119,6 +128,7 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
   }, [flowDeviceProfiles?.active, flowSendCommand, flowSendRaw, slotIndex]);
 
   const [brewState, setBrewState] = useState<"idle" | "starting" | "brewing" | "stopping">("idle");
+  const startTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleStop = useCallback(() => {
     flowSendCommand("STOP");
@@ -126,6 +136,11 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
   }, [flowSendCommand]);
 
   useEffect(() => {
+    if (connectionState !== "connected") {
+      setBrewState("idle");
+      return;
+    }
+
     if (flowSensor?.brewActive === true) {
       setBrewState("brewing");
       return;
@@ -134,14 +149,49 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
     if (flowSensor?.brewActive === false) {
       setBrewState("idle");
     }
-  }, [flowSensor?.brewActive]);
+  }, [connectionState, flowSensor?.brewActive]);
 
   useEffect(() => {
+    if (connectionState !== "connected") return;
     const lastLog = flowLogs.at(-1);
     if (lastLog?.includes("[shot] STOP")) {
       setBrewState("idle");
     }
-  }, [flowLogs]);
+  }, [connectionState, flowLogs]);
+
+  useEffect(() => {
+    refreshStatus(`brew-page:${profileId}`);
+  }, [profileId, refreshStatus]);
+
+  useEffect(() => {
+    if (brewState !== "starting") {
+      if (startTimeoutRef.current != null) {
+        clearTimeout(startTimeoutRef.current);
+        startTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    startTimeoutRef.current = setTimeout(() => {
+      setBrewState((current) => {
+        if (current !== "starting") return current;
+        refreshStatus("brew-start-timeout");
+        toast({
+          title: "Still waiting for brew confirmation",
+          description: "Refreshing machine status because the ESP did not confirm the shot start.",
+          durationMs: 2500,
+        });
+        return "idle";
+      });
+    }, 6000);
+
+    return () => {
+      if (startTimeoutRef.current != null) {
+        clearTimeout(startTimeoutRef.current);
+        startTimeoutRef.current = null;
+      }
+    };
+  }, [brewState, refreshStatus, toast]);
 
   const isBrewing = brewState !== "idle";
 
@@ -163,7 +213,7 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
   const pumpFlow = flowShot?.pumpFlow ?? flowSensor?.pumpFlow;
   const weightFlow = flowShot?.weightFlow ?? flowSensor?.weightFlow;
   const weight = flowShot?.shotWeight ?? flowSensor?.weight;
-  const showTelemetryFirst = isBrewing;
+  const showTelemetryFirst = isBrewing && isConnectionFresh;
   const profileCardRef = useRef<HTMLDivElement | null>(null);
   const telemetryCardRef = useRef<HTMLDivElement | null>(null);
   const previousCardTopsRef = useRef<{ profile?: number; telemetry?: number }>({});
@@ -258,19 +308,19 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
           <Button variant="outline" onClick={handleEditProfile} className="cursor-pointer">
             Edit
           </Button>
-          <Button variant="outline" onClick={handleSetAsDefault} disabled={!flowConnected} className="cursor-pointer">
+          <Button variant="outline" onClick={handleSetAsDefault} disabled={!isConnectionFresh} className="cursor-pointer">
             Set as default
           </Button>
           <Button onClick={() => {
             setBrewState("starting");
             handleBrew();
-          }} disabled={!flowConnected || isBrewing} className="cursor-pointer">
+          }} disabled={!isConnectionFresh || isBrewing} className="cursor-pointer">
             {brewState === "starting" ? "Starting..." : brewState === "brewing" ? "Brewing" : brewState === "stopping" ? "Stopping..." : "Brew"}
           </Button>
           <Button
             variant="destructive"
             onClick={handleStop}
-            disabled={!flowConnected || brewState !== "starting" && brewState !== "brewing"}
+            disabled={!isConnectionFresh || brewState !== "starting" && brewState !== "brewing"}
             className="cursor-pointer"
           >
             {brewState === "stopping" ? "Stopping..." : "Stop"}
@@ -327,9 +377,11 @@ export function ProfileBrewPage({ profileId }: { profileId: string }) {
                     unit="g"
                     color={LIVE_COLORS.weight}
                   />
-                  {!flowConnected && (
+                  {!isConnectionFresh && (
                     <p className="pt-1 text-xs text-muted-foreground">
-                      Connect to device to see live data and brew.
+                      {connectionState === "stale"
+                        ? `ESP data is stale${lastMessageAgeMs != null ? ` (${Math.round(lastMessageAgeMs / 1000)}s old)` : ""}. Reconnect or wait for refresh.`
+                        : "Connect to device to see live data and brew."}
                     </p>
                   )}
                 </div>

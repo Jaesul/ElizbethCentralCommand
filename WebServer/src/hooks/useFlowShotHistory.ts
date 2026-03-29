@@ -27,7 +27,12 @@ export interface FlowPhaseMarker {
 // Note: default maxPoints is intentionally high because FlowProfilingArduino can stream
 // shot_data_update at relatively high rates (e.g. 20ms–100ms). A low cap silently drops
 // older samples and makes the chart look "undersampled".
-export function useFlowShotHistory(sensor: FlowSensorData | null, shot: FlowShotData | null, maxPoints = 10000) {
+export function useFlowShotHistory(
+  sensor: FlowSensorData | null,
+  shot: FlowShotData | null,
+  maxPoints = 10000,
+  isTelemetryFresh = true,
+) {
   const [points, setPoints] = useState<FlowShotPoint[]>([]);
   const [isActive, setIsActive] = useState(false);
 
@@ -36,6 +41,11 @@ export function useFlowShotHistory(sensor: FlowSensorData | null, shot: FlowShot
   // and can arrive late, which would drop early shot samples and make the "first point" appear
   // far into the shot.
   useEffect(() => {
+    if (!isTelemetryFresh) {
+      if (isActive) setIsActive(false);
+      return;
+    }
+
     const brewActive = sensor?.brewActive ?? false;
     if (!brewActive && isActive) {
       setIsActive(false);
@@ -44,10 +54,11 @@ export function useFlowShotHistory(sensor: FlowSensorData | null, shot: FlowShot
     if (brewActive && !isActive) {
       setIsActive(true);
     }
-  }, [sensor?.brewActive, isActive]);
+  }, [sensor?.brewActive, isActive, isTelemetryFresh]);
 
   // Append new shot points (dedupe by tMs)
   useEffect(() => {
+    if (!isTelemetryFresh) return;
     if (!shot) return;
     const tMs = typeof shot.timeInShot === "number" ? shot.timeInShot : undefined;
     if (tMs === undefined) return;
@@ -85,7 +96,7 @@ export function useFlowShotHistory(sensor: FlowSensorData | null, shot: FlowShot
       const next = [...prev, nextPoint];
       return next.length > maxPoints ? next.slice(next.length - maxPoints) : next;
     });
-  }, [shot, maxPoints, isActive]);
+  }, [shot, maxPoints, isActive, isTelemetryFresh]);
 
   const phaseMarkers = useMemo(() => {
     const markers: FlowPhaseMarker[] = [];
