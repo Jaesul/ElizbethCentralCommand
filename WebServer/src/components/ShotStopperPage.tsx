@@ -1,17 +1,10 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useFlowConnection } from "~/components/FlowConnectionProvider";
-import { ProfileSelector } from "~/components/ProfileSelector";
-import { ShotMonitoringDrawer } from "~/components/ShotMonitoringDrawer";
-import { Drawer } from "~/components/ui/drawer";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Badge } from "~/components/ui/badge";
-import { Slider } from "~/components/ui/slider";
-import { useWebSocket } from "~/hooks/useWebSocket";
 import type { UseFlowProfilingWebSocketReturn } from "~/hooks/useFlowProfilingWebSocket";
-import { useShotHistory } from "~/hooks/useShotHistory";
-import { useProfiles } from "~/hooks/useProfiles";
 import { useTestingMode } from "~/hooks/useTestingMode";
 import { useMockDataGenerator } from "~/lib/mockDataGenerator";
 import type { ShotStopperData } from "~/types/shotstopper";
@@ -22,70 +15,16 @@ import { PhaseProfileGraph } from "~/components/PhaseProfileGraph";
 import { normalizeProfileForGraph } from "~/lib/profileUtils";
 import type { PhaseProfile } from "~/types/profiles";
 
-// Determine WebSocket URL - ESP32 is now the WebSocket server via mDNS
-const getWebSocketUrl = () => {
-  // Try mDNS first (shotstopper.local), fallback to IP if mDNS doesn't work
-  // You can set this via environment variable NEXT_PUBLIC_WS_URL or use the default
-  const customUrl = process.env.NEXT_PUBLIC_WS_URL;
-  if (customUrl) {
-    return customUrl;
-  }
-  
-  // Default: Connect to ESP32 WebSocket server via mDNS.
-  // NOTE: Arduino WebSocketsServer typically uses root path (no /ws).
-  return "ws://shotstopper-ws.local:81";
-};
-
 const FLOW_WS_URL = process.env.NEXT_PUBLIC_FLOW_WS_URL ?? "ws://shotstopper-ws.local:81";
-
-// Determine Pressure WebSocket URL - separate ESP32 for pressure reading (optional, only if explicitly configured)
-const getPressureWebSocketUrl = () => {
-  // Only connect to separate pressure reader if explicitly configured via environment variable
-  // By default, use the combined device which includes pressure data
-  const customUrl = process.env.NEXT_PUBLIC_PRESSURE_WS_URL;
-  if (customUrl) {
-    return customUrl;
-  }
-  
-  // Default: Don't connect to separate pressure reader (combined device provides pressure)
-  return "";
-};
 
 export function ShotStopperPage({
   flowConnection: flowConnectionProp,
 }: {
   flowConnection?: UseFlowProfilingWebSocketReturn;
 } = {}) {
-  // Avoid hydration mismatches: don't compute client-only values (URL, Date.now) during the initial SSR render.
-  const [isMounted, setIsMounted] = useState(false);
-  const [wsUrl, setWsUrl] = useState("");
-  const [pressureWsUrl, setPressureWsUrl] = useState("");
-
-  useEffect(() => {
-    setIsMounted(true);
-    setWsUrl(getWebSocketUrl());
-    setPressureWsUrl(getPressureWebSocketUrl());
-  }, []);
   const [mockData, setMockData] = useState<ShotStopperData | null>(null);
-  const [monitoringDrawerOpen, setMonitoringDrawerOpen] = useState(false);
-  
   const { isTestingMode, isLoaded: testingModeLoaded, setTestingMode } = useTestingMode();
-  
-  // Real WebSocket connection for ShotStopper (only when not in testing mode)
-  const { 
-    isConnected: wsConnected, 
-    data: wsData, 
-    error: wsError, 
-    lastMessageTime: wsLastMessageTime, 
-    reconnect: wsReconnect, 
-    sendMessage: wsSendMessage 
-  } = useWebSocket({
-    url: isTestingMode ? "" : wsUrl, // Don't connect in testing mode
-    reconnectInterval: 5000,
-    reconnectOnClose: true,
-  });
 
-  // Flow profiling: use injected connection (e.g. from testing page) or the shared app connection
   const flowFromContext = useFlowConnection();
   const {
     isConnected: flowConnected,
@@ -102,6 +41,7 @@ export function ShotStopperPage({
     sendRaw: flowSendRaw,
     reconnect: flowReconnect,
   } = flowConnectionProp ?? flowFromContext;
+
   const isFlowFresh = flowConnected && flowConnectionState === "connected";
   const { points: flowPoints, phaseMarkers: flowPhaseMarkers, isActive: flowShotActive } = useFlowShotHistory(
     flowSensor,
@@ -112,13 +52,11 @@ export function ShotStopperPage({
   const [flowLogCopyStatus, setFlowLogCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [flowCsvCopyStatus, setFlowCsvCopyStatus] = useState<"idle" | "copied" | "error">("idle");
 
-  // Parse active device profile for graph (from PROFILES response)
   const activeDeviceProfile: PhaseProfile | null = useMemo(() => {
     if (!flowDeviceProfiles?.slots?.length) return null;
-    // Prefer slot whose index matches device active; then isActive flag; then array position
     const activeSlot =
-      flowDeviceProfiles.slots.find((s) => s.index === flowDeviceProfiles.active) ??
-      flowDeviceProfiles.slots.find((s) => s.isActive) ??
+      flowDeviceProfiles.slots.find((slot) => slot.index === flowDeviceProfiles.active) ??
+      flowDeviceProfiles.slots.find((slot) => slot.isActive) ??
       flowDeviceProfiles.slots[flowDeviceProfiles.active];
     if (!activeSlot?.profile) return null;
     try {
@@ -134,56 +72,57 @@ export function ShotStopperPage({
     }
   }, [flowDeviceProfiles]);
 
-  // Debug: log current profile selection so we can verify we're showing the active profile
   useEffect(() => {
     if (!flowDeviceProfiles) return;
     const activeSlot =
-      flowDeviceProfiles.slots.find((s) => s.index === flowDeviceProfiles.active) ??
-      flowDeviceProfiles.slots.find((s) => s.isActive) ??
+      flowDeviceProfiles.slots.find((slot) => slot.index === flowDeviceProfiles.active) ??
+      flowDeviceProfiles.slots.find((slot) => slot.isActive) ??
       flowDeviceProfiles.slots[flowDeviceProfiles.active];
 
-    // Helpful debug to see what the ESP thinks is active vs what we're rendering.
-    // This logs whenever PROFILES changes or the normalized activeDeviceProfile name changes.
-    // Example output:
-    // [FlowProfiles] activeIndex=2 slotIndex=2 name="Blooming"
-    // [FlowProfiles] rawSlotProfile= {...original JSON from ESP...}
     if (activeSlot) {
-      // eslint-disable-next-line no-console
-      console.log(
-        "[FlowProfiles] Active slot from ESP",
-        {
-          activeIndex: flowDeviceProfiles.active,
-          slotIndex: activeSlot.index,
-          slotName: activeSlot.name,
-          normalizedName: activeDeviceProfile?.name,
-        }
-      );
+      console.log("[FlowProfiles] Active slot from ESP", {
+        activeIndex: flowDeviceProfiles.active,
+        slotIndex: activeSlot.index,
+        slotName: activeSlot.name,
+        normalizedName: activeDeviceProfile?.name,
+      });
       try {
         if (activeSlot.profile?.trim()) {
           const raw: unknown = JSON.parse(activeSlot.profile);
-          // eslint-disable-next-line no-console
           console.log("[FlowProfiles] rawSlotProfile", raw);
         }
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn("[FlowProfiles] Failed to parse active slot profile JSON", e);
+      } catch (error) {
+        console.warn("[FlowProfiles] Failed to parse active slot profile JSON", error);
       }
     } else {
-      // eslint-disable-next-line no-console
-      console.log(
-        "[FlowProfiles] No active slot resolved from PROFILES",
-        { activeIndex: flowDeviceProfiles.active, slots: flowDeviceProfiles.slots }
-      );
+      console.log("[FlowProfiles] No active slot resolved from PROFILES", {
+        activeIndex: flowDeviceProfiles.active,
+        slots: flowDeviceProfiles.slots,
+      });
     }
   }, [flowDeviceProfiles, activeDeviceProfile?.name]);
 
+  const { resetMockShot } = useMockDataGenerator({
+    onData: setMockData,
+    goalWeight: mockData?.goalWeight ?? 40,
+  });
+
+  useEffect(() => {
+    if (isTestingMode) {
+      resetMockShot();
+    }
+  }, [isTestingMode, resetMockShot]);
+
   const buildPressureCsv = () => {
-    // Minimal export: time + actual pressure + target pressure (like gaggiuino fields).
     const header = "t_ms,pressure_bar,target_pressure_bar";
-    const rows = flowPoints.map((p) => {
-      const t = Number.isFinite(p.tMs) ? String(Math.round(p.tMs)) : "";
-      const pressure = typeof p.pressure === "number" && Number.isFinite(p.pressure) ? p.pressure.toFixed(3) : "";
-      const target = typeof p.targetPressure === "number" && Number.isFinite(p.targetPressure) ? p.targetPressure.toFixed(3) : "";
+    const rows = flowPoints.map((point) => {
+      const t = Number.isFinite(point.tMs) ? String(Math.round(point.tMs)) : "";
+      const pressure =
+        typeof point.pressure === "number" && Number.isFinite(point.pressure) ? point.pressure.toFixed(3) : "";
+      const target =
+        typeof point.targetPressure === "number" && Number.isFinite(point.targetPressure)
+          ? point.targetPressure.toFixed(3)
+          : "";
       return `${t},${pressure},${target}`;
     });
     return [header, ...rows].join("\n") + "\n";
@@ -242,147 +181,34 @@ export function ShotStopperPage({
     }
   };
 
-  // Separate WebSocket connection for pressure reader
-  const { 
-    isConnected: pressureWsConnected, 
-    data: pressureWsData, 
-    error: pressureWsError, 
-    reconnect: pressureWsReconnect
-  } = useWebSocket({
-    url: isTestingMode ? "" : pressureWsUrl, // Don't connect in testing mode
-    reconnectInterval: 5000,
-    reconnectOnClose: true,
-  });
-
-  // Mock data generator (only when in testing mode)
-  const { startMockShot, stopMockShot, resetMockShot, isBrewing: mockBrewing } = useMockDataGenerator({
-    onData: setMockData,
-    goalWeight: mockData?.goalWeight ?? 40,
-  });
-
-  // Use mock data in testing mode, real data otherwise
-  // Merge pressure data: prioritize baseShotData (combined device), fallback to separate pressure WebSocket
-  const baseShotData = isTestingMode ? mockData : wsData;
-  const shotData = baseShotData 
-    ? {
-        ...baseShotData,
-        // Prioritize pressure from baseShotData (combined device), fallback to separate pressure WebSocket
-        currentPressure: baseShotData.currentPressure ?? baseShotData.pressureBar ?? pressureWsData?.currentPressure ?? pressureWsData?.pressureBar,
-        pressurePSI: baseShotData.pressurePSI ?? pressureWsData?.pressurePSI,
-        pressureBar: baseShotData.pressureBar ?? baseShotData.currentPressure ?? pressureWsData?.pressureBar ?? pressureWsData?.currentPressure,
-      }
-    : pressureWsData 
-      ? {
-          // If only pressure data is available, create minimal data object
-          currentPressure: pressureWsData.currentPressure ?? pressureWsData.pressureBar,
-          pressurePSI: pressureWsData.pressurePSI,
-          pressureBar: pressureWsData.pressureBar ?? pressureWsData.currentPressure,
-        }
-      : null;
-  
-  const isConnected = isTestingMode ? true : (wsConnected || pressureWsConnected);
-  const error = isTestingMode ? undefined : (wsError ?? pressureWsError);
-  // Don't use Date.now() in render; it will differ between SSR and client and cause hydration warnings.
-  const lastMessageTime = isTestingMode ? undefined : wsLastMessageTime;
-
-  // Manual triac power control (for flow profiling comparisons).
-  // Initial 0 when no data; once we get ESP data we use it; when data stops we keep the last value.
-  const [pumpPowerPct, setPumpPowerPct] = useState(0);
-  const [isPowerSliding, setIsPowerSliding] = useState(false);
-
-  useEffect(() => {
+  const handleStartShot = () => {
     if (isTestingMode) return;
-    if (isPowerSliding) return;
-    const v = wsData?.pumpPowerPct;
-    if (typeof v !== "number" || !Number.isFinite(v)) return; // no data: keep previous value
-    const next = Math.max(0, Math.min(100, Math.round(v)));
-    setPumpPowerPct((prev) => (prev !== next ? next : prev)); // only update when value actually changed to avoid loops
-  }, [wsData?.pumpPowerPct, isTestingMode, isPowerSliding]);
-
-  // Stable array for controlled Slider to avoid "Maximum update depth exceeded" (new [pumpPowerPct] each render triggers Radix onValueChange loop)
-  const sliderPumpPowerValue = useMemo(() => [pumpPowerPct], [pumpPowerPct]);
-
-  // Handle sendMessage - disable in testing mode or make it control mock data
-  const sendMessage = isTestingMode 
-    ? (message: object) => {
-        // In testing mode, simulate commands
-        if ("command" in message) {
-          if (message.command === "startShot") {
-            startMockShot();
-          } else if (message.command === "stopShot") {
-            stopMockShot();
-          }
-        }
-      }
-    : wsSendMessage;
-
-  const sendPumpPower = (value: number) => {
-    if (isTestingMode) return;
-    if (!wsConnected) return; // must go to main device, not the pressure-only socket
-    const p = Math.max(0, Math.min(100, Math.round(value)));
-    wsSendMessage({ command: "setPower", powerPct: p });
-  };
-
-  const { shotHistory, isActiveShot } = useShotHistory(shotData);
-  const {
-    profiles,
-    selectedProfileId,
-    isLoaded: profilesLoaded,
-    deleteProfile,
-    selectProfile,
-  } = useProfiles();
-
-  const handleReconnect = () => {
-    if (!isTestingMode) {
-      wsReconnect();
-      pressureWsReconnect();
-    } else {
-      resetMockShot();
-    }
-  };
-
-  // Initialize mock data when entering testing mode
-  useEffect(() => {
-    if (isTestingMode) {
-      resetMockShot();
-    }
-  }, [isTestingMode, resetMockShot]);
-
-
-  const handleStartShot = (profileId: string) => {
-    selectProfile(profileId);
-    sendMessage({ command: "startShot" });
-    setMonitoringDrawerOpen(true);
+    flowSendCommand("GO");
   };
 
   const handleStopShot = () => {
-    sendMessage({ command: "stopShot" });
+    if (isTestingMode) return;
+    flowSendCommand("STOP");
   };
-
-  // Use shot history directly (pressure is already merged in useShotHistory hook)
-  const mergedShotHistoryForDrawer = shotHistory;
 
   return (
     <div className="container mx-auto max-w-5xl px-4 py-8 xl:max-w-6xl">
       <div className="mb-8">
-        <div className="flex items-center justify-between mb-2">
+        <div className="mb-2 flex items-center justify-between">
           <div>
-            <h1 className="text-4xl font-bold mb-2">Elizabeth Central Command</h1>
-            <p className="text-muted-foreground">
-              Real-time espresso shot monitoring from ESP32
-            </p>
+            <h1 className="mb-2 text-4xl font-bold">Elizabeth Central Command</h1>
+            <p className="text-muted-foreground">Real-time espresso shot monitoring from ESP32</p>
           </div>
-          {/* Testing Mode Toggle */}
           {testingModeLoaded && (
             <Card className="w-auto">
               <CardContent className="pt-6">
                 <div className="flex items-center gap-3">
-                  <label className="text-sm font-medium cursor-pointer flex items-center gap-2">
+                  <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
                     <input
                       type="checkbox"
                       checked={isTestingMode}
-                      onChange={(e) => setTestingMode(e.target.checked)}
-                      className="w-4 h-4"
+                      onChange={(event) => setTestingMode(event.target.checked)}
+                      className="h-4 w-4"
                     />
                     Testing Mode
                   </label>
@@ -396,8 +222,17 @@ export function ShotStopperPage({
         </div>
       </div>
 
-      {/* Flow Profiling Control Panel (replaces node ws_capture for GO/STOP/STATUS) */}
-      {!isTestingMode && (
+      {isTestingMode ? (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Testing Mode</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm text-muted-foreground">
+            <p>Live ESP traffic is disabled while testing mode is on.</p>
+            <p>The shared flow connection remains available, but this page will not send machine commands.</p>
+          </CardContent>
+        </Card>
+      ) : (
         <Card className="mb-6">
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
@@ -427,15 +262,17 @@ export function ShotStopperPage({
 
             {flowConnectionState === "stale" && (
               <div className="text-sm text-muted-foreground">
-                Flow telemetry is stale{flowLastMessageAgeMs != null ? ` (${Math.round(flowLastMessageAgeMs / 1000)}s old)` : ""}. The UI is keeping the last values visible until the ESP responds again.
+                Flow telemetry is stale
+                {flowLastMessageAgeMs != null ? ` (${Math.round(flowLastMessageAgeMs / 1000)}s old)` : ""}. The UI is
+                keeping the last values visible until the ESP responds again.
               </div>
             )}
 
             <div className="flex flex-wrap gap-2">
-              <Button onClick={() => flowSendCommand("GO")} disabled={!isFlowFresh}>
+              <Button onClick={handleStartShot} disabled={!isFlowFresh}>
                 GO
               </Button>
-              <Button onClick={() => flowSendCommand("STOP")} disabled={!isFlowFresh} variant="destructive">
+              <Button onClick={handleStopShot} disabled={!isFlowFresh} variant="destructive">
                 STOP
               </Button>
               <Button onClick={() => flowRefreshStatus("testing-panel")} disabled={!flowConnected} variant="outline">
@@ -443,7 +280,7 @@ export function ShotStopperPage({
               </Button>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
               <div>
                 <div className="text-muted-foreground">brewActive</div>
                 <div className="font-medium">{flowSensor?.brewActive ? "true" : "false"}</div>
@@ -464,7 +301,7 @@ export function ShotStopperPage({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
               <div>
                 <div className="text-muted-foreground">targetP</div>
                 <div className="font-medium">{(flowShot?.targetPressure ?? 0).toFixed(2)} bar</div>
@@ -494,13 +331,17 @@ export function ShotStopperPage({
               <Button variant="outline" size="sm" onClick={() => flowSendRaw("PROFILES")} disabled={!flowConnected}>
                 Send PROFILES
               </Button>
-              <Button variant="outline" size="sm" onClick={() => flowRefreshStatus("testing-panel-manual")} disabled={!flowConnected}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => flowRefreshStatus("testing-panel-manual")}
+                disabled={!flowConnected}
+              >
                 Refresh Status
               </Button>
               <span className="text-xs text-muted-foreground">Replies appear in Device log below.</span>
             </div>
 
-            {/* Active profile graph (device) */}
             <div className="space-y-2">
               <div className="text-sm font-medium">Active profile (device)</div>
               {activeDeviceProfile ? (
@@ -508,7 +349,7 @@ export function ShotStopperPage({
                   <PhaseProfileGraph profile={activeDeviceProfile} height={220} inline />
                   <div className="rounded-md border bg-muted/30 p-3">
                     <div className="mb-1 text-xs font-medium text-muted-foreground">Profile (steps / phases)</div>
-                    <pre className="max-h-64 overflow-auto text-xs font-mono whitespace-pre-wrap break-words">
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs font-mono">
                       {JSON.stringify(activeDeviceProfile, null, 2)}
                     </pre>
                   </div>
@@ -520,42 +361,31 @@ export function ShotStopperPage({
               )}
             </div>
 
-            <div className="rounded-md border p-3 bg-muted/30 max-h-48 overflow-auto text-xs font-mono whitespace-pre-wrap">
-              {(flowLogs.slice(-30).join("\n") || "[no logs yet]")}
+            <div className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/30 p-3 text-xs font-mono">
+              {flowLogs.slice(-30).join("\n") || "[no logs yet]"}
             </div>
 
-            {/* Copy/paste-friendly log panel */}
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-medium">Device log</div>
                 <div className="flex items-center gap-2">
-                  {flowLogCopyStatus === "copied" && (
-                    <span className="text-xs text-muted-foreground">Copied</span>
-                  )}
-                  {flowLogCopyStatus === "error" && (
-                    <span className="text-xs text-destructive">Copy failed</span>
-                  )}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleCopyFlowLogs}
-                    disabled={flowLogs.length === 0}
-                  >
+                  {flowLogCopyStatus === "copied" && <span className="text-xs text-muted-foreground">Copied</span>}
+                  {flowLogCopyStatus === "error" && <span className="text-xs text-destructive">Copy failed</span>}
+                  <Button variant="outline" size="sm" onClick={handleCopyFlowLogs} disabled={flowLogs.length === 0}>
                     Copy Logs
                   </Button>
                 </div>
               </div>
               <textarea
-                className="w-full min-h-[180px] rounded-md border bg-background p-3 text-xs font-mono"
+                className="min-h-[180px] w-full rounded-md border bg-background p-3 text-xs font-mono"
                 readOnly
-                value={(flowLogs.length ? flowLogs.join("\n") : "[no logs yet]")}
+                value={flowLogs.length ? flowLogs.join("\n") : "[no logs yet]"}
               />
               <div className="text-xs text-muted-foreground">
                 Command replies and device broadcast logs (with timestamps). Use for debugging without Serial.
               </div>
             </div>
 
-            {/* Full JSON payload stream (copy/paste) */}
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-medium">Shot JSON payloads (raw)</div>
@@ -569,20 +399,20 @@ export function ShotStopperPage({
                 </Button>
               </div>
               <textarea
-                className="w-full min-h-[220px] rounded-md border bg-background p-3 text-xs font-mono"
+                className="min-h-[220px] w-full rounded-md border bg-background p-3 text-xs font-mono"
                 readOnly
-                value={(flowRawJson.length ? flowRawJson.join("\n") : "[no shot JSON yet]")}
+                value={flowRawJson.length ? flowRawJson.join("\n") : "[no shot JSON yet]"}
               />
               <div className="text-xs text-muted-foreground">
                 This includes the exact WS JSON messages during the shot (sensor + shot updates).
               </div>
             </div>
 
-            {/* CSV export (pressure actual + target) */}
             <div className="space-y-2">
               <div className="text-sm font-medium">CSV export (pressure)</div>
               <div className="text-xs text-muted-foreground">
-                Exports <code>t_ms</code>, <code>pressure_bar</code>, <code>target_pressure_bar</code> from the recorded shot points.
+                Exports <code>t_ms</code>, <code>pressure_bar</code>, <code>target_pressure_bar</code> from the recorded
+                shot points.
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button
@@ -593,12 +423,7 @@ export function ShotStopperPage({
                 >
                   Download CSV
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCopyPressureCsv}
-                  disabled={flowPoints.length === 0}
-                >
+                <Button variant="outline" size="sm" onClick={handleCopyPressureCsv} disabled={flowPoints.length === 0}>
                   Copy CSV
                 </Button>
                 {flowCsvCopyStatus === "copied" && <span className="text-xs text-muted-foreground">Copied</span>}
@@ -606,7 +431,6 @@ export function ShotStopperPage({
               </div>
             </div>
 
-            {/* Charts */}
             {flowShotActive && (
               <div className="pt-3">
                 <FlowShotChart points={flowPoints} phaseMarkers={flowPhaseMarkers} />
@@ -615,43 +439,6 @@ export function ShotStopperPage({
           </CardContent>
         </Card>
       )}
-
-      {/* Manual pump power control (triac %). Sends setPower to ESP32 on release. */}
-      {!isTestingMode && (
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle className="flex items-center justify-between">
-              <span>Manual Pump Power</span>
-              <Badge variant={wsConnected ? "default" : "secondary"}>
-                {wsConnected ? `${pumpPowerPct}%` : "Not connected"}
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Slider
-              value={sliderPumpPowerValue}
-              min={0}
-              max={100}
-              step={1}
-              disabled={!wsConnected}
-              onValueChange={(v) => {
-                setIsPowerSliding(true);
-                setPumpPowerPct(v[0] ?? 0);
-              }}
-              onValueCommit={(v) => {
-                setIsPowerSliding(false);
-                const val = v[0] ?? 0;
-                setPumpPowerPct(val);
-                sendPumpPower(val);
-              }}
-            />
-            <div className="text-xs text-muted-foreground">
-              This sends <code>setPower</code> to the ESP32. (ShotStopper firmware must support triac power control.)
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
     </div>
   );
 }

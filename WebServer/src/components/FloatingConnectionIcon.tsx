@@ -13,6 +13,7 @@ interface FloatingConnectionIconProps {
   onReconnect?: () => void;
   lastMessageTime?: string;
   lastMessageAgeMs?: number | null;
+  scaleConnected?: boolean;
   isTestingMode?: boolean;
 }
 
@@ -22,6 +23,7 @@ export function FloatingConnectionIcon({
   onReconnect,
   lastMessageTime,
   lastMessageAgeMs,
+  scaleConnected,
   isTestingMode,
 }: FloatingConnectionIconProps) {
   const [open, setOpen] = useState(false);
@@ -58,6 +60,18 @@ export function FloatingConnectionIcon({
           : connectionState === "disconnected"
             ? "ESP disconnected"
             : null;
+  const scaleDotClass =
+    scaleConnected === true
+      ? "bg-green-500"
+      : scaleConnected === false
+        ? "bg-red-500"
+        : "bg-slate-400";
+  const scaleLabel =
+    scaleConnected === true
+      ? "Scale connected"
+      : scaleConnected === false
+        ? "Scale disconnected"
+        : "Scale status unknown";
 
   return (
     <Drawer open={open} onOpenChange={setOpen}>
@@ -85,12 +99,20 @@ export function FloatingConnectionIcon({
           ) : (
             <WifiOff className={cn("size-6", iconClass)} />
           )}
-          {/* Dot indicator */}
+          {/* ESP dot indicator */}
           <div
             className={cn(
               "absolute -top-1 -right-1 h-3 w-3 rounded-full border-2 border-background",
               dotClass
             )}
+          />
+          {/* Scale dot indicator */}
+          <div
+            className={cn(
+              "absolute -bottom-1 -left-1 h-3 w-3 rounded-full border-2 border-background",
+              scaleDotClass
+            )}
+            title={scaleLabel}
           />
         </div>
       </button>
@@ -100,6 +122,7 @@ export function FloatingConnectionIcon({
         onReconnect={onReconnect}
         lastMessageTime={lastMessageTime}
         lastMessageAgeMs={lastMessageAgeMs}
+        scaleConnected={scaleConnected}
         isTestingMode={isTestingMode}
       />
     </Drawer>

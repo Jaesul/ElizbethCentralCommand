@@ -213,6 +213,7 @@ export function useFlowProfilingWebSocket({
   const shotThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastConnectionLogRef = useRef<string>("");
   const lastKeepAliveIssueRef = useRef<string>("");
+  const staleReconnectAttemptedRef = useRef(false);
   const lastSensorStatusRef = useRef<string>("");
   const lastShotPhaseLogRef = useRef<string>("");
   setShotRef.current = setShot;
@@ -301,6 +302,7 @@ export function useFlowProfilingWebSocket({
         keepAlivePendingRef.current = false;
         lastKeepAliveAtRef.current = 0;
         lastKeepAliveIssueRef.current = "";
+        staleReconnectAttemptedRef.current = false;
         hasConnectedOnceRef.current = true;
         pushLogRef.current(`[ui] connected: ${url}`);
         console.log(`${FLOW_WS_DEBUG_PREFIX} open`, {
@@ -320,6 +322,7 @@ export function useFlowProfilingWebSocket({
       ws.onmessage = (event) => {
         keepAlivePendingRef.current = false;
         lastKeepAliveIssueRef.current = "";
+        staleReconnectAttemptedRef.current = false;
         setConnectionState("connected");
         const nowIso = new Date().toISOString();
         const nowMs = Date.now();
@@ -531,6 +534,7 @@ export function useFlowProfilingWebSocket({
     keepAlivePendingRef.current = false;
     lastKeepAliveAtRef.current = 0;
     lastKeepAliveIssueRef.current = "";
+    staleReconnectAttemptedRef.current = false;
     if (wsRef.current) {
       const ws = wsRef.current;
       wsRef.current = null;
@@ -671,6 +675,11 @@ export function useFlowProfilingWebSocket({
           pushLogRef.current(`[ui] keepalive unanswered after ${age}ms`);
         }
         setConnectionState("stale");
+        if (!staleReconnectAttemptedRef.current) {
+          staleReconnectAttemptedRef.current = true;
+          pushLogRef.current("[ui] stale connection detected; forcing reconnect");
+          reconnect();
+        }
         return;
       }
 
@@ -683,7 +692,7 @@ export function useFlowProfilingWebSocket({
         healthMonitorRef.current = null;
       }
     };
-  }, [forceReconnectThresholdMs, keepAliveIntervalMs, keepAliveThresholdMs, staleMessageThresholdMs]);
+  }, [forceReconnectThresholdMs, keepAliveIntervalMs, keepAliveThresholdMs, reconnect, staleMessageThresholdMs]);
 
   return {
     isConnected,

@@ -75,6 +75,7 @@ function FlowConnectionLifecycleManager({
       onReconnect={flowConnection.reconnect}
       lastMessageTime={flowConnection.lastMessageTime}
       lastMessageAgeMs={flowConnection.lastMessageAgeMs}
+      scaleConnected={flowConnection.sensor?.scalesPresent}
     />
   );
 }

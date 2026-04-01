@@ -18,6 +18,7 @@ interface ConnectionStatusDrawerProps {
   onReconnect?: () => void;
   lastMessageTime?: string;
   lastMessageAgeMs?: number | null;
+  scaleConnected?: boolean;
   isTestingMode?: boolean;
 }
 
@@ -27,6 +28,7 @@ export function ConnectionStatusDrawer({
   onReconnect,
   lastMessageTime,
   lastMessageAgeMs,
+  scaleConnected,
   isTestingMode,
 }: ConnectionStatusDrawerProps) {
   const isConnected = connectionState === "connected";
@@ -56,6 +58,18 @@ export function ConnectionStatusDrawer({
       : lastMessageAgeMs < 1000
         ? "just now"
         : `${Math.round(lastMessageAgeMs / 1000)}s ago`;
+  const scaleStatusLabel =
+    scaleConnected === true
+      ? "Connected"
+      : scaleConnected === false
+        ? "Disconnected"
+        : "Unknown";
+  const scaleStatusVariant =
+    scaleConnected === true
+      ? "default"
+      : scaleConnected === false
+        ? "destructive"
+        : "secondary";
   const description =
     isTestingMode
       ? "Testing mode is on, so this screen is using simulated machine data."
@@ -116,6 +130,22 @@ export function ConnectionStatusDrawer({
             <div className="space-y-1 text-sm text-muted-foreground">
               <div>Last message: {new Date(lastMessageTime).toLocaleTimeString()}</div>
               {lastMessageAgeLabel && <div>Freshness: {lastMessageAgeLabel}</div>}
+            </div>
+          )}
+
+          {!isTestingMode && (
+            <div className="flex items-center justify-between rounded-md border bg-muted/30 p-3">
+              <div>
+                <div className="text-sm font-medium">Scale</div>
+                <div className="text-xs text-muted-foreground">
+                  {scaleConnected === true
+                    ? "The ESP reports an active scale connection."
+                    : scaleConnected === false
+                      ? "The ESP is reachable, but no scale is currently connected."
+                      : "Waiting for scale status from the ESP."}
+                </div>
+              </div>
+              <Badge variant={scaleStatusVariant}>{scaleStatusLabel}</Badge>
             </div>
           )}
 
