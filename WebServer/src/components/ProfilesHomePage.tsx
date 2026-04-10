@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bean, Hand, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
+import { BeanPounderLogo } from "~/components/BeanPounderLogo";
 import { CoffeeSelector } from "~/components/CoffeeSelector";
 import { Card, CardContent } from "~/components/ui/card";
 import { Skeleton } from "~/components/ui/skeleton";
@@ -97,9 +98,10 @@ export function ProfilesHomePage() {
             <div className="space-y-2">
               <h2 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
                 Let&apos;s pound a bean or two{" "}
-                <span className="whitespace-nowrap" aria-hidden>
-                  ☕🫘💪
-                </span>
+                <BeanPounderLogo
+                  className="ml-0.5 inline-block aspect-[54/24] h-[1.15em] w-auto align-text-bottom text-primary"
+                  aria-hidden
+                />
               </h2>
               <p className="mx-auto max-w-md text-sm text-muted-foreground">
                 Add beans, dial recipes, and log shots—then jump in when you are ready to pull.
@@ -111,10 +113,10 @@ export function ProfilesHomePage() {
               onClick={() => router.push(buildBrewHref(null))}
               aria-label="Open brew page"
             >
-              <span className="inline-flex items-center gap-1.5 text-primary-foreground">
-                <Bean className="h-5 w-5" aria-hidden />
-                <Hand className="h-5 w-5" aria-hidden />
-              </span>
+              <BeanPounderLogo
+                className="aspect-[54/24] h-8 w-auto text-primary-foreground"
+                aria-hidden
+              />
               <span className="text-primary-foreground">Bean Pounder</span>
             </Button>
           </div>

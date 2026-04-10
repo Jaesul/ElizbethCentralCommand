@@ -1,7 +1,7 @@
 "use client";
 
-import { Bean, Hand } from "lucide-react";
 import Link from "next/link";
+import { BeanPounderLogo } from "~/components/BeanPounderLogo";
 
 export function AppNav() {
   return (
@@ -11,10 +11,10 @@ export function AppNav() {
           href="/"
           className="inline-flex items-center gap-3 text-2xl font-bold tracking-tight transition hover:opacity-80"
         >
-          <span className="inline-flex items-center gap-1.5 text-primary">
-            <Bean className="h-5 w-5" />
-            <Hand className="h-5 w-5" />
-          </span>
+          <BeanPounderLogo
+            className="aspect-[54/24] h-7 w-auto text-primary"
+            aria-hidden
+          />
           <span>Bean Pounder</span>
         </Link>
       </nav>

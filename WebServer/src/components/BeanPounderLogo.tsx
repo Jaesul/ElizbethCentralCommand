@@ -1,0 +1,31 @@
+import type { SVGProps } from "react";
+import { cn } from "~/lib/utils";
+
+/**
+ * Inline mark matching `public/bean-pounder-logo.svg` so `currentColor` follows the UI theme.
+ * (External `<img src="…svg">` would not inherit `color`.)
+ */
+export function BeanPounderLogo({ className, ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 54 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cn("inline-block shrink-0", className)}
+      {...props}
+    >
+      <path d="M4.05 19.95a11.24 8.585 135 0 0 15.9-15.9 11.24 8.585 135 0 0-15.9 15.9" />
+      <path d="M19.8 4.2C20 14 4 10 4.2 19.8" />
+      <g transform="translate(30 0)">
+        <path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2" />
+        <path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2" />
+        <path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8" />
+        <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
+      </g>
+    </svg>
+  );
+}

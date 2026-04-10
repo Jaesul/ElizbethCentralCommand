@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useMemo, useCallback, useLayoutEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Edit, Hand, Loader2, Trash2 } from "lucide-react";
+import { ArrowLeft, Edit, Loader2, Trash2 } from "lucide-react";
+import { BeanPounderLogo } from "~/components/BeanPounderLogo";
 import { CoffeeImage } from "~/components/CoffeeImage";
 import { useFlowConnection } from "~/components/FlowConnectionProvider";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
@@ -858,7 +859,10 @@ export function ProfileBrewPage() {
               "Stopping..."
             ) : (
               <>
-                <Hand className="h-4 w-4" aria-hidden />
+                <BeanPounderLogo
+                  className="aspect-[54/24] h-4 w-auto"
+                  aria-hidden
+                />
                 Start Bean Pound
               </>
             )}
