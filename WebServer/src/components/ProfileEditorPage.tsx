@@ -16,6 +16,7 @@ import {
 import { PhaseProfileGraph } from "~/components/PhaseProfileGraph";
 import { useProfiles } from "~/hooks/useProfiles";
 import { useToast } from "~/components/ui/use-toast";
+import { buildBrewHref } from "~/lib/coffeeUtils";
 import type {
   PhaseProfile,
   Phase,
@@ -27,7 +28,13 @@ import type {
   GlobalStopConditionType,
   GlobalStopConditionEntry,
 } from "~/types/profiles";
-import { calculatePhaseProfileDuration, importGaggiuinoProfile, validatePhaseProfile } from "~/lib/profileUtils";
+import {
+  applyInstantTargetTimeInvariantToPhases,
+  applyInstantTargetTimeInvariantToProfile,
+  calculatePhaseProfileDuration,
+  importPastedPhaseProfileJson,
+  validatePhaseProfile,
+} from "~/lib/profileUtils";
 import { PROFILE_PRESSURE_COLOR, PROFILE_FLOW_COLOR } from "~/lib/profileColors";
 import { cn } from "~/lib/utils";
 
@@ -91,7 +98,7 @@ function globalStopConditionsFromEntries(entries: GlobalStopConditionEntry[]): G
 
 const defaultPhase: Phase = {
   type: "PRESSURE",
-  target: { end: 3, curve: "INSTANT", time: 5 },
+  target: { end: 3, curve: "INSTANT", time: 0 },
   restriction: 6,
   stopConditions: { time: 10 },
 };
@@ -624,16 +631,18 @@ function PhaseStepEditor({ phase, index, onChange, onRemove, onSaveStep, canRemo
             unit={phase.type === "PRESSURE" ? "bar" : "ml/s"}
             onChange={(v) => onChange({ ...phase, target: { ...phase.target, end: v } })}
           />
-          <NumberInput
-            label="Target time"
-            value={phase.target.time}
-            min={0}
-            max={120}
-            step={0.5}
-            unit="s"
-            onChange={(v) => onChange({ ...phase, target: { ...phase.target, time: v } })}
-            className={phase.target.curve !== "INSTANT" ? "col-span-2" : undefined}
-          />
+          {phase.target.curve !== "INSTANT" && (
+            <NumberInput
+              label="Target time"
+              value={phase.target.time}
+              min={0}
+              max={120}
+              step={0.5}
+              unit="s"
+              onChange={(v) => onChange({ ...phase, target: { ...phase.target, time: v } })}
+              className="col-span-2"
+            />
+          )}
         </div>
 
         <div>
@@ -643,13 +652,30 @@ function PhaseStepEditor({ phase, index, onChange, onRemove, onSaveStep, canRemo
               value={phase.target.curve}
               options={CURVES.map((curve) => ({ value: curve.value, label: curve.label }))}
               onChange={(nextCurve) => {
-              const nextTarget = { ...phase.target, curve: nextCurve };
-              // When switching from INSTANT to a start/end curve and no explicit start is set yet,
-              // default start to 0 so the graph uses 0 instead of the previous phase's end.
-              if (nextCurve !== "INSTANT" && nextTarget.start == null) {
-                nextTarget.start = 0;
-              }
-              onChange({ ...phase, target: nextTarget });
+                let nextTarget = { ...phase.target, curve: nextCurve };
+                let nextStop = { ...phase.stopConditions };
+                if (nextCurve === "INSTANT") {
+                  const t = nextTarget.time ?? 0;
+                  if (t > 0) {
+                    const merged = Math.max(nextStop.time ?? 0, t);
+                    if (merged > 0) nextStop = { ...nextStop, time: merged };
+                  }
+                  nextTarget = { ...nextTarget, time: 0 };
+                } else {
+                  if (phase.target.curve === "INSTANT" && (nextTarget.time ?? 0) <= 0) {
+                    const fromStop = nextStop.time;
+                    nextTarget = {
+                      ...nextTarget,
+                      time: typeof fromStop === "number" && fromStop > 0 ? fromStop : 5,
+                    };
+                  }
+                  // When using a start/end curve and no explicit start is set yet,
+                  // default start to 0 so the graph uses 0 instead of the previous phase's end.
+                  if (nextTarget.start == null) {
+                    nextTarget.start = 0;
+                  }
+                }
+                onChange({ ...phase, target: nextTarget, stopConditions: nextStop });
               }}
               triggerClassName="w-full"
               contentClassName="w-[var(--radix-dropdown-menu-trigger-width)] min-w-[var(--radix-dropdown-menu-trigger-width)]"
@@ -703,11 +729,8 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
       const targetTimeMs = toMs(p.target?.time);
       const stop = p.stopConditions ?? {};
       const stopOut: Record<string, number> = {};
-      // Firmware advances phases based on stopConditions (not target.time alone).
-      // Make "Target time" authoritative for time-based phase progression.
-      if (targetTimeMs != null) {
-        stopOut.time = targetTimeMs;
-      } else if (toMs(stop.time) != null) {
+      // Time stop is only what the user sets under phase stop conditions — never copied from target.time.
+      if (toMs(stop.time) != null) {
         stopOut.time = toMs(stop.time)!;
       }
       if (typeof stop.pressureAbove === "number" && stop.pressureAbove > 0) stopOut.pressureAbove = stop.pressureAbove;
@@ -750,7 +773,9 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
     if (profileId) {
       const p = profiles.find((x) => x.id === profileId);
       if (p) {
-        const loadedPhases = p.phases.length > 0 ? p.phases.map((ph) => ({ ...ph })) : [{ ...defaultPhase }];
+        const loadedPhases = applyInstantTargetTimeInvariantToPhases(
+          p.phases.length > 0 ? p.phases.map((ph) => ({ ...ph })) : [{ ...defaultPhase }],
+        );
         setName(p.name);
         setPhases(loadedPhases);
         setCommandedPhases(loadedPhases.map((ph) => ({ ...ph })));
@@ -775,7 +800,7 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
           ) {
             const match = typeof data.id === "string" ? /^device-slot-(\d+)$/.exec(data.id) : null;
             setDeviceSlotIndexToWrite(match ? parseInt(match[1]!, 10) : null);
-            const loadedPhases = data.phases.map((ph) => ({ ...ph }));
+            const loadedPhases = applyInstantTargetTimeInvariantToPhases(data.phases.map((ph) => ({ ...ph })));
             setName(data.name);
             setPhases(loadedPhases);
             setCommandedPhases(loadedPhases.map((ph) => ({ ...ph })));
@@ -812,12 +837,15 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
     }
   }, [selectedStepIndex]);
 
-  const profileForGraph: PhaseProfile = {
-    id: profileId ?? "temp",
-    name: name || "New Profile",
-    phases,
-    globalStopConditions: globalStop,
-  };
+  const profileForGraph: PhaseProfile = useMemo(
+    () => ({
+      id: profileId ?? "temp",
+      name: name || "New Profile",
+      phases: applyInstantTargetTimeInvariantToPhases(phases),
+      globalStopConditions: globalStop,
+    }),
+    [profileId, name, phases, globalStop],
+  );
 
   const [saveStepFeedback, setSaveStepFeedback] = useState(false);
   const saveStep = () => {
@@ -831,17 +859,21 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
   }, [saveStepFeedback]);
 
   const handleSave = () => {
-    const candidate: PhaseProfile = {
+    const candidate: PhaseProfile = applyInstantTargetTimeInvariantToProfile({
       id: profileId ?? "",
       name: name.trim(),
       phases,
       globalStopConditions: globalStop,
-    };
+    });
     const errors = validatePhaseProfile(candidate);
     if (errors.length > 0) {
       alert(`Validation:\n${errors.join("\n")}`);
       return;
     }
+
+    const syncedPhases = candidate.phases.map((p) => ({ ...p }));
+    setPhases(syncedPhases);
+    setCommandedPhases(syncedPhases.map((p) => ({ ...p })));
 
     // If we're editing a device profile (loaded from sessionStorage with id device-slot-N),
     // persist to ESP via WRITE_PROFILE.
@@ -864,7 +896,7 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
         description: `Saved changes to “${candidate.name || "Profile"}”.`,
         actionLabel: "Go to brew page",
         onAction: () => {
-          router.push(`/brew/device-slot-${deviceSlotIndexToWrite}`);
+          router.push(buildBrewHref(`device-slot-${deviceSlotIndexToWrite}`));
         },
       });
       return;
@@ -904,7 +936,7 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
   };
 
   const applyAdvancedOverride = () => {
-    const result = importGaggiuinoProfile(advancedOverrideJson);
+    const result = importPastedPhaseProfileJson(advancedOverrideJson);
     if (!result.profile) {
       setAdvancedOverrideErrors(result.errors);
       return;
@@ -948,7 +980,7 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
             <div>
               <div className="text-sm font-medium">Advanced override</div>
               <div className="text-xs text-muted-foreground">
-                Paste raw Gaggiuino profile JSON and convert it into this editor format.
+                Paste GaggiMate or Gaggiuino profile JSON and convert it into this editor format.
               </div>
             </div>
             <ChevronDown className={cn("h-4 w-4 transition-transform", advancedOverrideOpen && "rotate-180")} />
@@ -958,7 +990,7 @@ export function ProfileEditorPage({ profileId }: { profileId?: string }) {
               <textarea
                 value={advancedOverrideJson}
                 onChange={(e) => setAdvancedOverrideJson(e.target.value)}
-                placeholder="Paste raw Gaggiuino profile JSON here"
+                placeholder="Paste GaggiMate or Gaggiuino profile JSON here"
                 className="min-h-[220px] w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
               />
               {advancedOverrideErrors.length > 0 && (

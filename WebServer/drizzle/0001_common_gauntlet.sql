@@ -1,0 +1,1 @@
+ALTER TABLE "elizbeth_central_command_coffee" ADD COLUMN "imageUrl" text;

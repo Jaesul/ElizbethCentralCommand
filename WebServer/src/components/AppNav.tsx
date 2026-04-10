@@ -1,17 +1,21 @@
+"use client";
+
+import { Bean, Hand } from "lucide-react";
 import Link from "next/link";
 
 export function AppNav() {
   return (
     <header className="border-b bg-background">
-      <nav className="container mx-auto flex max-w-5xl items-center gap-6 px-4 py-4 xl:max-w-6xl">
-        <Link href="/" className="focus-visible:outline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded">
-          <h1 className="text-xl font-bold tracking-tight">ECC</h1>
-        </Link>
+      <nav className="container mx-auto flex max-w-5xl items-center px-4 py-4 xl:max-w-6xl">
         <Link
-          href="/testing"
-          className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+          href="/"
+          className="inline-flex items-center gap-3 text-2xl font-bold tracking-tight transition hover:opacity-80"
         >
-          Testing
+          <span className="inline-flex items-center gap-1.5 text-primary">
+            <Bean className="h-5 w-5" />
+            <Hand className="h-5 w-5" />
+          </span>
+          <span>Bean Pounder</span>
         </Link>
       </nav>
     </header>

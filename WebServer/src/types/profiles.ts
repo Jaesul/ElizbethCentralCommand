@@ -51,7 +51,8 @@ export interface PhaseTarget {
   start?: number;
   end: number;
   curve: TransitionCurve;
-  time: number; // seconds (transition duration)
+  /** Transition duration in seconds; must be 0 when curve is INSTANT (use phase stopConditions.time for hold). */
+  time: number;
 }
 
 export interface PhaseStopConditions {

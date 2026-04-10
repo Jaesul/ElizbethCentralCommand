@@ -7,6 +7,7 @@ import type {
   PhaseTarget,
   PhaseStopConditions,
   GlobalStopConditions,
+  TransitionCurve,
 } from "~/types/profiles";
 
 /**
@@ -172,9 +173,34 @@ function interpolate(curve: TransitionCurve, t: number): number {
 }
 
 /**
+ * INSTANT phases use target.time 0; hold/ramp duration belongs in stopConditions.time (or other stops).
+ * Migrates legacy target.time > 0 on INSTANT into stopConditions.time (max with existing).
+ */
+export function applyInstantTargetTimeInvariantToPhases(phases: Phase[]): Phase[] {
+  return phases.map((phase) => {
+    if (phase.target.curve !== "INSTANT") return phase;
+    const t = phase.target.time ?? 0;
+    if (t <= 0) return phase;
+    const sc = { ...(phase.stopConditions ?? {}) };
+    const merged = Math.max(sc.time ?? 0, t);
+    if (merged > 0) sc.time = merged;
+    return {
+      ...phase,
+      target: { ...phase.target, time: 0 },
+      stopConditions: sc,
+    };
+  });
+}
+
+export function applyInstantTargetTimeInvariantToProfile(profile: PhaseProfile): PhaseProfile {
+  return { ...profile, phases: applyInstantTargetTimeInvariantToPhases(profile.phases) };
+}
+
+/**
  * Normalize a profile (e.g. from API/ESP) for graphing.
  * - Converts time from milliseconds to seconds when values look like ms (> 100).
  * - Converts target.start === -1 to undefined so the graph uses "previous phase end".
+ * - INSTANT phases: target.time forced to 0; former target.time merged into stopConditions.time.
  * Returns a full PhaseProfile so it can be passed to generatePhaseProfileGraphData / PhaseProfileGraph.
  */
 export function normalizeProfileForGraph(profile: {
@@ -206,19 +232,28 @@ export function normalizeProfileForGraph(profile: {
       normalizedStop.time = toSeconds(rawStop.time);
     }
 
+    const curve: TransitionCurve =
+      target.curve === "LINEAR" ||
+      target.curve === "EASE_IN" ||
+      target.curve === "EASE_OUT" ||
+      target.curve === "EASE_IN_OUT"
+        ? target.curve
+        : "INSTANT";
+
+    let targetTime = toSeconds(target.time);
+    if (curve === "INSTANT" && targetTime > 0) {
+      const merged = Math.max(normalizedStop.time ?? 0, targetTime);
+      if (merged > 0) normalizedStop.time = merged;
+      targetTime = 0;
+    }
+
     return {
       type: p.type === "FLOW" ? "FLOW" : "PRESSURE",
       target: {
         start: normalizedStart,
         end: typeof target.end === "number" ? target.end : 0,
-        curve:
-          target.curve === "LINEAR" ||
-          target.curve === "EASE_IN" ||
-          target.curve === "EASE_OUT" ||
-          target.curve === "EASE_IN_OUT"
-            ? target.curve
-            : "INSTANT",
-        time: toSeconds(target.time),
+        curve,
+        time: targetTime,
       },
       restriction: typeof p.restriction === "number" ? p.restriction : 0,
       stopConditions: normalizedStop,
@@ -350,6 +385,213 @@ export function importGaggiuinoProfile(rawJson: string): { profile?: PhaseProfil
   }
 
   return { profile: normalized, errors: [] };
+}
+
+/** Detect GaggiMate-style profile objects (`label` + phases with `pump.target`). */
+export function isGaggiMateProfileShape(parsed: unknown): boolean {
+  if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const root = parsed as Record<string, unknown>;
+  if (typeof root.label !== "string") return false;
+  if (!Array.isArray(root.phases) || root.phases.length === 0) return false;
+  const p0 = root.phases[0];
+  if (p0 == null || typeof p0 !== "object" || Array.isArray(p0)) return false;
+  const pump = (p0 as Record<string, unknown>).pump;
+  if (pump == null || typeof pump !== "object" || Array.isArray(pump)) return false;
+  return typeof (pump as Record<string, unknown>).target === "string";
+}
+
+type GmTransition = { type?: unknown; duration?: unknown; adaptive?: unknown };
+type GmPump = { target?: unknown; pressure?: unknown; flow?: unknown };
+type GmTargetRow = { type?: unknown; operator?: unknown; value?: unknown };
+type GmPhase = {
+  name?: unknown;
+  duration?: unknown;
+  transition?: unknown;
+  pump?: unknown;
+  targets?: unknown;
+};
+
+function gmTransitionCurve(t: GmTransition | undefined): TransitionCurve {
+  const ty = typeof t?.type === "string" ? t.type.toLowerCase() : "";
+  if (ty === "linear") return "LINEAR";
+  return "INSTANT";
+}
+
+function mapGmTargetsToStops(targets: unknown): PhaseStopConditions {
+  const out: PhaseStopConditions = {};
+  if (!Array.isArray(targets)) return out;
+  for (const row of targets) {
+    if (row == null || typeof row !== "object" || Array.isArray(row)) continue;
+    const r = row as GmTargetRow;
+    const ty = typeof r.type === "string" ? r.type.toLowerCase() : "";
+    const op = typeof r.operator === "string" ? r.operator.toLowerCase() : "";
+    const val = r.value;
+    if (typeof val !== "number" || !Number.isFinite(val)) continue;
+    if (ty === "pressure" && op === "gte") out.pressureAbove = val;
+    else if (ty === "pressure" && op === "lte") out.pressureBelow = val;
+    else if (ty === "flow" && op === "gte") out.flowAbove = val;
+    else if (ty === "flow" && op === "lte") out.flowBelow = val;
+    else if ((ty === "volumetric" || ty === "weight") && op === "gte") out.weight = val;
+  }
+  return out;
+}
+
+/**
+ * Convert a GaggiMate profile JSON object into a PhaseProfile (same shape as the editor / device).
+ * Maps `pump.target` pressure/flow, `transition.type` → curve, phase `duration` + `targets[]` → stop conditions.
+ */
+export function importGaggiMateProfile(rawJson: string): { profile?: PhaseProfile; errors: string[] } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    return { errors: ["Invalid JSON. Paste a valid GaggiMate profile object."] };
+  }
+
+  if (!isGaggiMateProfileShape(parsed)) {
+    return { errors: ["JSON does not look like a GaggiMate profile (expected `label` and phases with `pump.target`)."] };
+  }
+
+  const root = parsed as Record<string, unknown>;
+  const errors: string[] = [];
+  const label = (root.label as string).trim();
+  if (!label) errors.push("`label` must be a non-empty string.");
+
+  const rawPhases = root.phases as GmPhase[];
+  if (rawPhases.length > 10) errors.push("GaggiMate profile has more than 10 phases; trim or split before import.");
+
+  const phases: Array<{
+    type?: "PRESSURE" | "FLOW";
+    target?: { start?: number; end?: number; curve?: string; time?: number };
+    restriction?: number;
+    stopConditions?: Record<string, number>;
+  }> = [];
+
+  let maxGlobalWeight = 0;
+
+  rawPhases.forEach((gm, index) => {
+    if (gm == null || typeof gm !== "object" || Array.isArray(gm)) {
+      errors.push(`Phase ${index + 1} must be an object.`);
+      return;
+    }
+    const transition =
+      gm.transition != null && typeof gm.transition === "object" && !Array.isArray(gm.transition)
+        ? (gm.transition as GmTransition)
+        : undefined;
+    const pump =
+      gm.pump != null && typeof gm.pump === "object" && !Array.isArray(gm.pump) ? (gm.pump as GmPump) : undefined;
+
+    if (!pump) {
+      errors.push(`Phase ${index + 1}: \`pump\` object is required.`);
+      return;
+    }
+
+    const pumpTarget = typeof pump.target === "string" ? pump.target.toLowerCase() : "";
+    const isFlow = pumpTarget === "flow";
+    const endRaw = isFlow ? pump.flow : pump.pressure;
+    if (typeof endRaw !== "number" || !Number.isFinite(endRaw)) {
+      errors.push(`Phase ${index + 1}: pump.${isFlow ? "flow" : "pressure"} must be a finite number.`);
+      return;
+    }
+
+    const phaseDuration =
+      typeof gm.duration === "number" && Number.isFinite(gm.duration) && gm.duration >= 0 ? gm.duration : 0;
+    const transitionDur =
+      transition != null && typeof transition.duration === "number" && Number.isFinite(transition.duration)
+        ? Math.max(0, transition.duration)
+        : 0;
+
+    const curve = gmTransitionCurve(transition);
+    let targetTime = 0;
+    let stopTime: number | undefined;
+
+    if (curve === "LINEAR") {
+      targetTime = phaseDuration > 0 ? phaseDuration : transitionDur;
+    } else {
+      targetTime = 0;
+      stopTime = phaseDuration > 0 ? phaseDuration : transitionDur > 0 ? transitionDur : undefined;
+    }
+
+    const targetStops = mapGmTargetsToStops(gm.targets);
+    if (typeof targetStops.weight === "number" && targetStops.weight > 0) {
+      maxGlobalWeight = Math.max(maxGlobalWeight, targetStops.weight);
+    }
+
+    const stopConditions: PhaseStopConditions = { ...targetStops };
+    if (stopTime != null && stopTime > 0) {
+      stopConditions.time = stopTime;
+    } else if (curve === "LINEAR" && targetTime > 0) {
+      stopConditions.time = targetTime;
+    }
+
+    const flowLimit = typeof pump.flow === "number" && Number.isFinite(pump.flow) ? pump.flow : 0;
+    const pressureLimit = typeof pump.pressure === "number" && Number.isFinite(pump.pressure) ? pump.pressure : 0;
+
+    let restriction: number;
+    if (isFlow) {
+      restriction = pressureLimit > 0 ? pressureLimit : 9;
+    } else {
+      restriction = flowLimit > 0 ? flowLimit : 6;
+    }
+
+    phases.push({
+      type: isFlow ? "FLOW" : "PRESSURE",
+      target: {
+        end: endRaw,
+        curve,
+        time: targetTime,
+      },
+      restriction,
+      stopConditions: stopConditions as Record<string, number>,
+    });
+  });
+
+  if (errors.length > 0) {
+    return { errors };
+  }
+
+  const globalStopConditions: GlobalStopConditions =
+    maxGlobalWeight > 0 ? { weight: maxGlobalWeight } : {};
+
+  let name = label;
+  const desc = typeof root.description === "string" ? root.description.trim() : "";
+  if (desc) {
+    name = `${label} — ${desc}`;
+  }
+  const temp = root.temperature;
+  if (typeof temp === "number" && Number.isFinite(temp)) {
+    name = desc ? `${label} (${temp}°C) — ${desc}` : `${label} (${temp}°C)`;
+  }
+
+  const normalized = normalizeProfileForGraph({
+    id: "imported-gaggimate-profile",
+    name,
+    phases,
+    globalStopConditions: globalStopConditions as Record<string, number>,
+  });
+
+  const profileErrors = validatePhaseProfile(normalized);
+  if (profileErrors.length > 0) {
+    return { errors: profileErrors };
+  }
+
+  return { profile: normalized, errors: [] };
+}
+
+/**
+ * Paste handler: GaggiMate shape first, otherwise strict Gaggiuino import.
+ */
+export function importPastedPhaseProfileJson(rawJson: string): { profile?: PhaseProfile; errors: string[] } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    return { errors: ["Invalid JSON. Paste a valid profile object."] };
+  }
+  if (isGaggiMateProfileShape(parsed)) {
+    return importGaggiMateProfile(rawJson);
+  }
+  return importGaggiuinoProfile(rawJson);
 }
 
 /**
@@ -510,6 +752,11 @@ export function validatePhaseProfile(profile: Partial<PhaseProfile>): string[] {
       }
       if (phase.target.time < 0) {
         errors.push(`Phase ${idx + 1}: target.time must be >= 0`);
+      }
+      if (phase.target.curve === "INSTANT" && (phase.target.time ?? 0) !== 0) {
+        errors.push(
+          `Phase ${idx + 1}: INSTANT curve must have target time 0 (use Stop conditions → Time for hold duration).`,
+        );
       }
     }
     if (typeof phase.restriction !== "number" || phase.restriction < 0) {

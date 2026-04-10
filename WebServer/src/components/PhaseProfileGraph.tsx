@@ -57,9 +57,15 @@ interface PhaseProfileGraphProps {
   profile: PhaseProfile;
   height?: number;
   inline?: boolean;
+  heading?: string;
 }
 
-export function PhaseProfileGraph({ profile, height = 300, inline = false }: PhaseProfileGraphProps) {
+export function PhaseProfileGraph({
+  profile,
+  height = 300,
+  inline = false,
+  heading = "Profile",
+}: PhaseProfileGraphProps) {
   // Generate data on every render to ensure reactivity (profile changes frequently during editing)
   const data = generatePhaseProfileGraphData(profile);
   const lineDefs = getLineDefsForProfile(profile);
@@ -237,7 +243,7 @@ export function PhaseProfileGraph({ profile, height = 300, inline = false }: Pha
 
   return (
     <div className="w-full rounded-lg border p-4">
-      <h3 className="mb-2 text-sm font-medium">Profile</h3>
+      <h3 className="mb-2 text-sm font-medium">{heading}</h3>
       {chartContent}
     </div>
   );

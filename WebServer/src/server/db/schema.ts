@@ -108,3 +108,130 @@ export const verificationTokens = createTable(
   }),
   (t) => [primaryKey({ columns: [t.identifier, t.token] })],
 );
+
+export const coffees = createTable(
+  "coffee",
+  (d) => ({
+    id: d.integer().primaryKey().generatedByDefaultAsIdentity(),
+    name: d.varchar({ length: 256 }).notNull(),
+    imageUrl: d.text(),
+    roaster: d.varchar({ length: 256 }),
+    origin: d.varchar({ length: 256 }),
+    process: d.varchar({ length: 128 }),
+    roastLevel: d.varchar({ length: 64 }),
+    roastDate: d.timestamp({ mode: "date", withTimezone: true }),
+    purchaseDate: d.timestamp({ mode: "date", withTimezone: true }),
+    notes: d.text(),
+    tastingNotes: d.text(),
+    preferredProfileRef: d.varchar({ length: 128 }),
+    preferredProfileName: d.varchar({ length: 256 }),
+    defaultBrewMethod: d.varchar({ length: 64 }),
+    createdAt: d
+      .timestamp({ mode: "date", withTimezone: true })
+      .$defaultFn(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    updatedAt: d.timestamp({ mode: "date", withTimezone: true }).$onUpdate(() => new Date()),
+  }),
+  (t) => [
+    index("coffee_name_idx").on(t.name),
+    index("coffee_created_at_idx").on(t.createdAt),
+  ],
+);
+
+export const coffeeRecipes = createTable(
+  "coffee_recipe",
+  (d) => ({
+    id: d.integer().primaryKey().generatedByDefaultAsIdentity(),
+    coffeeId: d
+      .integer()
+      .notNull()
+      .references(() => coffees.id, { onDelete: "cascade" }),
+    name: d.varchar({ length: 256 }).notNull(),
+    brewMethod: d.varchar({ length: 64 }).notNull(),
+    doseGrams: d.doublePrecision(),
+    yieldGrams: d.doublePrecision(),
+    brewRatio: d.doublePrecision(),
+    grindSetting: d.varchar({ length: 128 }),
+    waterTempC: d.doublePrecision(),
+    brewTimeSeconds: d.integer(),
+    profileRef: d.varchar({ length: 128 }),
+    profileNameSnapshot: d.varchar({ length: 256 }),
+    tastingNotes: d.text(),
+    notes: d.text(),
+    createdAt: d
+      .timestamp({ mode: "date", withTimezone: true })
+      .$defaultFn(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    updatedAt: d.timestamp({ mode: "date", withTimezone: true }).$onUpdate(() => new Date()),
+  }),
+  (t) => [
+    index("coffee_recipe_coffee_id_idx").on(t.coffeeId),
+    index("coffee_recipe_created_at_idx").on(t.createdAt),
+  ],
+);
+
+export const brewLedgerEntries = createTable(
+  "brew_ledger_entry",
+  (d) => ({
+    id: d.integer().primaryKey().generatedByDefaultAsIdentity(),
+    coffeeId: d
+      .integer()
+      .notNull()
+      .references(() => coffees.id, { onDelete: "cascade" }),
+    recipeId: d
+      .integer()
+      .references(() => coffeeRecipes.id, { onDelete: "set null" }),
+    brewedAt: d
+      .timestamp({ mode: "date", withTimezone: true })
+      .$defaultFn(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    brewMethod: d.varchar({ length: 64 }).notNull(),
+    doseGrams: d.doublePrecision(),
+    yieldGrams: d.doublePrecision(),
+    brewRatio: d.doublePrecision(),
+    grindSetting: d.varchar({ length: 128 }),
+    waterTempC: d.doublePrecision(),
+    brewTimeSeconds: d.integer(),
+    profileRef: d.varchar({ length: 128 }),
+    profileNameSnapshot: d.varchar({ length: 256 }),
+    grinder: d.varchar({ length: 128 }),
+    rating: d.integer(),
+    waterRecipe: d.varchar({ length: 256 }),
+    tastingNotes: d.text(),
+    notes: d.text(),
+    createdAt: d
+      .timestamp({ mode: "date", withTimezone: true })
+      .$defaultFn(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    updatedAt: d.timestamp({ mode: "date", withTimezone: true }).$onUpdate(() => new Date()),
+  }),
+  (t) => [
+    index("brew_ledger_coffee_id_idx").on(t.coffeeId),
+    index("brew_ledger_recipe_id_idx").on(t.recipeId),
+    index("brew_ledger_brewed_at_idx").on(t.brewedAt),
+  ],
+);
+
+export const coffeesRelations = relations(coffees, ({ many }) => ({
+  recipes: many(coffeeRecipes),
+  ledgerEntries: many(brewLedgerEntries),
+}));
+
+export const coffeeRecipesRelations = relations(coffeeRecipes, ({ one, many }) => ({
+  coffee: one(coffees, {
+    fields: [coffeeRecipes.coffeeId],
+    references: [coffees.id],
+  }),
+  ledgerEntries: many(brewLedgerEntries),
+}));
+
+export const brewLedgerEntriesRelations = relations(brewLedgerEntries, ({ one }) => ({
+  coffee: one(coffees, {
+    fields: [brewLedgerEntries.coffeeId],
+    references: [coffees.id],
+  }),
+  recipe: one(coffeeRecipes, {
+    fields: [brewLedgerEntries.recipeId],
+    references: [coffeeRecipes.id],
+  }),
+}));

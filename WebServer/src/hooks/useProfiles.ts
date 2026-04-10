@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import type { PhaseProfile } from "~/types/profiles";
 import { defaultPhaseProfiles } from "~/types/profiles";
-import { pressureProfileToPhaseProfile } from "~/lib/profileUtils";
+import { applyInstantTargetTimeInvariantToProfile, pressureProfileToPhaseProfile } from "~/lib/profileUtils";
 
 const STORAGE_KEY = "shotstopper-profiles";
 const SELECTED_KEY = "shotstopper-selected-profile";
@@ -19,10 +19,14 @@ function migrateLegacy(parsed: unknown): PhaseProfile[] {
   if (Array.isArray(parsed) && parsed.length > 0) {
     const first = parsed[0];
     if (first && typeof first === "object" && "preInfusion" in first) {
-      return parsed.map((p) => pressureProfileToPhaseProfile(p as Parameters<typeof pressureProfileToPhaseProfile>[0]));
+      return parsed.map((p) =>
+        applyInstantTargetTimeInvariantToProfile(
+          pressureProfileToPhaseProfile(p as Parameters<typeof pressureProfileToPhaseProfile>[0]),
+        ),
+      );
     }
     if (first && isPhaseProfile(first)) {
-      return parsed as PhaseProfile[];
+      return (parsed as PhaseProfile[]).map((p) => applyInstantTargetTimeInvariantToProfile(p));
     }
   }
   return defaultPhaseProfiles;
@@ -43,7 +47,7 @@ export function useProfiles() {
         const isLegacy = Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object" && parsed[0] !== null && "preInfusion" in parsed[0];
         list = Array.isArray(parsed)
           ? parsed.every((p) => isPhaseProfile(p))
-            ? (parsed as PhaseProfile[])
+            ? (parsed as PhaseProfile[]).map((p) => applyInstantTargetTimeInvariantToProfile(p))
             : migrateLegacy(parsed)
           : defaultPhaseProfiles;
         if (isLegacy) {

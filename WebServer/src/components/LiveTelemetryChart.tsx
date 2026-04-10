@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import type { FlowPhaseMarker, FlowShotPoint } from "~/hooks/useFlowShotHistory";
 import { PROFILE_COLORS } from "~/lib/profileColors";
+import { exponentialMovingAverage } from "~/lib/telemetrySmoothing";
 
 const TELEMETRY_COLORS = {
   pressure: "#dc2626",
@@ -40,24 +41,52 @@ interface LiveTelemetryChartProps {
   height?: number;
 }
 
+/** Causal EMA: older smoothed points do not change when new samples arrive. */
+const TELEMETRY_EMA_ALPHA = 0.18;
+
 export function LiveTelemetryChart({
   points,
   phaseMarkers = [],
   height = 360,
 }: LiveTelemetryChartProps) {
-  const data: TelemetryRow[] = React.useMemo(
-    () =>
-      points.map((p) => ({
-        time: p.tMs / 1000,
-        pressure: typeof p.pressure === "number" ? p.pressure : undefined,
-        targetPressure: typeof p.targetPressure === "number" ? p.targetPressure : undefined,
-        pumpFlow: typeof p.pumpFlow === "number" ? p.pumpFlow : undefined,
-        targetPumpFlow: typeof p.targetPumpFlow === "number" ? p.targetPumpFlow : undefined,
-        weight: typeof p.weight === "number" ? p.weight : undefined,
-        weightFlow: typeof p.weightFlow === "number" ? p.weightFlow : undefined,
-      })),
-    [points]
-  );
+  const data: TelemetryRow[] = React.useMemo(() => {
+    const raw = points.map((p) => ({
+      time: p.tMs / 1000,
+      pressure: typeof p.pressure === "number" ? p.pressure : undefined,
+      targetPressure: typeof p.targetPressure === "number" ? p.targetPressure : undefined,
+      pumpFlow: typeof p.pumpFlow === "number" ? p.pumpFlow : undefined,
+      targetPumpFlow: typeof p.targetPumpFlow === "number" ? p.targetPumpFlow : undefined,
+      weight: typeof p.weight === "number" ? p.weight : undefined,
+      weightFlow: typeof p.weightFlow === "number" ? p.weightFlow : undefined,
+    }));
+
+    if (raw.length === 0) return raw;
+
+    const pressure = exponentialMovingAverage(
+      raw.map((r) => r.pressure),
+      TELEMETRY_EMA_ALPHA,
+    );
+    const pumpFlow = exponentialMovingAverage(
+      raw.map((r) => r.pumpFlow),
+      TELEMETRY_EMA_ALPHA,
+    );
+    const weight = exponentialMovingAverage(
+      raw.map((r) => r.weight),
+      TELEMETRY_EMA_ALPHA,
+    );
+    const weightFlow = exponentialMovingAverage(
+      raw.map((r) => r.weightFlow),
+      TELEMETRY_EMA_ALPHA,
+    );
+
+    return raw.map((row, i) => ({
+      ...row,
+      pressure: pressure[i],
+      pumpFlow: pumpFlow[i],
+      weight: weight[i],
+      weightFlow: weightFlow[i],
+    }));
+  }, [points]);
 
   const weightMax = React.useMemo(() => {
     const values = data.map((d) => d.weight).filter((v): v is number => typeof v === "number" && v > 0);
@@ -185,13 +214,15 @@ export function LiveTelemetryChart({
             name="Pressure"
             stroke={TELEMETRY_COLORS.pressure}
             strokeWidth={2}
+            strokeLinejoin="round"
+            strokeLinecap="round"
             dot={false}
             connectNulls
             isAnimationActive={false}
           />
           <Line
             yAxisId="primary"
-            type="linear"
+            type="stepAfter"
             dataKey="targetPressure"
             name="Target pressure"
             stroke={TELEMETRY_COLORS.targetPressure}
@@ -208,13 +239,15 @@ export function LiveTelemetryChart({
             name="Pump flow"
             stroke={TELEMETRY_COLORS.pumpFlow}
             strokeWidth={2}
+            strokeLinejoin="round"
+            strokeLinecap="round"
             dot={false}
             connectNulls
             isAnimationActive={false}
           />
           <Line
             yAxisId="primary"
-            type="linear"
+            type="stepAfter"
             dataKey="targetPumpFlow"
             name="Target flow"
             stroke={TELEMETRY_COLORS.targetPumpFlow}
@@ -231,6 +264,8 @@ export function LiveTelemetryChart({
             name="Weight"
             stroke={TELEMETRY_COLORS.weight}
             strokeWidth={2}
+            strokeLinejoin="round"
+            strokeLinecap="round"
             dot={false}
             connectNulls
             isAnimationActive={false}
@@ -243,6 +278,8 @@ export function LiveTelemetryChart({
             stroke={TELEMETRY_COLORS.weightFlow}
             strokeWidth={2}
             strokeDasharray="4 4"
+            strokeLinejoin="round"
+            strokeLinecap="round"
             dot={false}
             connectNulls
             isAnimationActive={false}
