@@ -12,6 +12,20 @@ This repo is a **custom espresso control and logging stack** built around:
 
 **Plumbing / hydraulics:** On the machine side, the **only extra component you must add in the water path** for closed-loop pressure profiling is a **pressure transducer** (installed on a **T-fitting** or equivalent tap so it sees brew-line pressure). Everything else is **electrical/control** (MCU, pump power control, optional scale, wiring)—important, but not “plumbed in” the same way.
 
+**Install model:** This mod is aimed at **dual-boiler** machines (or similar) whose **brew and steam temperatures are already under PID** (factory or aftermarket). Bean Pounder’s purpose is **only** to add **pump-side pressure/flow profiling** and related telemetry—it does **not** take over boilers, steam, or the rest of the machine’s logic. **Gaggiuino** and **GaggiMate** are **standalone** controller stacks that **replace** the brain of the machine on typical installs; **Bean Pounder is meant to run in parallel** with your **existing** controller so that controller keeps doing PID and system duties while the ESP adds profiling **alongside** it.
+
+---
+
+## Target machines & design intent
+
+| | |
+|--|--|
+| **Intended hardware context** | **Dual-boiler** (or equivalent) machines with **PID-controlled** brew path—and usually steam—**already** handled by the stock board or an existing upgrade. This stack **does not** aim to replace that thermal layer. |
+| **Purpose of the mod** | Add **closed-loop pressure/flow control at the vibratory pump** (plus optional scale, WebSocket telemetry, and the Bean Pounder app for profiles and logging). **Not** to take over temperature regulation, UI, water management, or other OEM/PID functions. |
+| **Parallel vs standalone** | **Gaggiuino** and **GaggiMate** are built as **standalone** systems: the machine is operated through **their** firmware as the primary controller. **Bean Pounder is designed to be installed in parallel** with your machine’s **existing** controller—the original electronics remain responsible for **PID and normal operation**; the ESP **supplements** the shot path with profiling hardware/software only where this repo describes (pump control tap, pressure sensing, brew trigger interface, etc.). |
+
+The firmware’s **temperature fields in telemetry are placeholders** because **brew temperature is assumed to be owned by the machine’s own PID**, not by Bean Pounder.
+
 ---
 
 ## What’s in this repository
@@ -70,7 +84,9 @@ flowchart LR
 
 ## Relationship to Gaggiuino
 
-**Gaggiuino** is a mature, community-driven **STM32** firmware project for modified Gaggia-style machines: PID/steam logic, pressure/flow profiling, often **HX or boiler** temperature control, a rich **LVGL** display, and a **built-in web server** that speaks WebSocket JSON to the browser.
+**Gaggiuino** is a mature, community-driven **STM32** firmware project for modified Gaggia-style machines: PID/steam logic, pressure/flow profiling, often **HX or boiler** temperature control, a rich **LVGL** display, and a **built-in web server** that speaks WebSocket JSON to the browser. **GaggiMate** is likewise an ecosystem built around **replacing** or **being** the primary control path for compatible machines. Both are **standalone** stacks relative to the factory controller.
+
+**Bean Pounder** borrows **pump profiling ideas and code** from that world but targets a **different install philosophy**: **dual-boiler, PID-equipped** machines where **you keep the existing controller** and add this mod **only** for **pump-side flow/pressure** (see [Target machines & design intent](#target-machines--design-intent)).
 
 **This project is not a fork of Gaggiuino** and does **not** run Gaggiuino’s STM32 binary. What we **do** take from Gaggiuino is the **pump control code**—the logic that maps target pressure/flow, restrictions, and live sensor state to pump output—**ported/adapted** to this firmware (ESP32, PSM triac dimming, our telemetry loop). The surrounding runtime (WiFi/WebSocket server, flash profile slots, optional scale, temperature placeholders, Bean Pounder UI) is **not** the full Gaggiuino firmware.
 
@@ -80,11 +96,11 @@ flowchart LR
 - **WebSocket telemetry** reuses **the same message types and many of the same field names** as Gaggiuino’s web stack, so a web client built against those contracts can often parse this firmware’s stream without a parallel protocol.
 - **Differences (non-exhaustive):**
   - **MCU / platform:** ESP32 + Arduino framework here vs typical Gaggiuino **STM32 Blackpill** (and different pin maps, libraries, and timing).
-  - **Temperature:** The sketch header notes **brew temperature is ignored** for profiling (values may be placeholders in JSON). Gaggiuino normally integrates real thermal control.
+  - **Temperature / role:** The sketch **does not** own brew temperature—**by design** for **parallel** installs on **PID dual boilers** (placeholders in JSON). Gaggiuino (and similar standalone mods) normally **integrates** real thermal control as part of **being** the machine controller.
   - **UI:** Gaggiuino ships **on-device display + embedded web UI**; this repo’s primary UI is the **external Bean Pounder** Next app (plus optional testing pages).
   - **Scope:** Gaggiuino is a full machine controller; here we **reuse its pump control** but target a **narrower ESP32 stack** (PSM, pressure ADC, optional scale, WebSocket to an external app). Gaggiuino still supports a **wider matrix of hardware** (valves, thermocouples, on-device UI, etc.) depending on build.
 
-Think of **Elizabeth Central Command** as a **parallel stack** that **speaks a familiar dialect** (profiles + WS shapes) for people who already know Gaggiuino, while remaining free to diverge where the hardware and author’s goals differ.
+Think of **Elizabeth Central Command** as a **parallel add-on** that **speaks a familiar dialect** (Gaggiuino-style profiles + WS shapes) while **leaving boiler PID and machine logic to the OEM or existing controller**—unlike **standalone** stacks such as **Gaggiuino** or **GaggiMate**, which **replace** that role on typical builds.
 
 ---
 
