@@ -10,6 +10,7 @@ import {
   DrawerTitle,
 } from "~/components/ui/drawer";
 import { Wifi, WifiOff } from "lucide-react";
+import { SafeLucide } from "~/components/SafeLucide";
 import type { FlowConnectionState } from "~/hooks/useFlowProfilingWebSocket";
 
 interface ConnectionStatusDrawerProps {
@@ -101,9 +102,9 @@ export function ConnectionStatusDrawer({
         <div className="flex items-center justify-between">
           <DrawerTitle className="flex items-center gap-2">
             {isConnected ? (
-              <Wifi className="size-5 text-green-500" />
+              <SafeLucide icon={Wifi} className="size-5 text-green-500" />
             ) : (
-              <WifiOff className="size-5 text-red-500" />
+              <SafeLucide icon={WifiOff} className="size-5 text-red-500" />
             )}
             Connection Status
           </DrawerTitle>
