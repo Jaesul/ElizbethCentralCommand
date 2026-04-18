@@ -15,6 +15,20 @@
       "when": 1775071784439,
       "tag": "0001_common_gauntlet",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776021713379,
+      "tag": "0002_curious_warstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1776026415629,
+      "tag": "0003_petite_mikhail_rasputin",
+      "breakpoints": true
     }
   ]
 }

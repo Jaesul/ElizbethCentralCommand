@@ -4,10 +4,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 
+import { CoffeeBagActionDialog } from "~/components/CoffeeBagActionDialog";
 import { CoffeeFormDialog } from "~/components/CoffeeFormDialog";
 import { CoffeeImage } from "~/components/CoffeeImage";
 import { CoffeeLedgerTable } from "~/components/CoffeeLedgerTable";
 import { CoffeeProfilePicker } from "~/components/CoffeeProfilePicker";
+import {
+  CoffeeRotationStatusIcon,
+  getCoffeeRotationStatusLabel,
+} from "~/components/CoffeeRotationStatus";
 import { CoffeeRecipeCarousel } from "~/components/CoffeeRecipeCarousel";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
@@ -19,13 +24,22 @@ import {
   formatDateTimeNoSeconds,
   formatMetric,
   formatDateOnly,
+  formatSeconds,
   getLedgerProfileRef,
   getBrewMethodLabel,
 } from "~/lib/coffeeUtils";
 import { getDeviceProfilesAsPhaseProfiles } from "~/lib/deviceProfiles";
-import type { CoffeeDetail } from "~/types/coffee";
+import type { BrewLedgerEntry, BrewLedgerPage, CoffeeDetail } from "~/types/coffee";
 
 export function CoffeeHomePage({ coffeeId }: { coffeeId: number }) {
+  const toDayBoundaryIso = useCallback(
+    (value: string, boundary: "start" | "end") => {
+      const suffix = boundary === "start" ? "T00:00:00" : "T23:59:59.999";
+      return new Date(`${value}${suffix}`).toISOString();
+    },
+    [],
+  );
+
   const router = useRouter();
   const handleBack = useCallback(() => {
     router.back();
@@ -38,6 +52,14 @@ export function CoffeeHomePage({ coffeeId }: { coffeeId: number }) {
   } = useFlowConnection();
   const [coffee, setCoffee] = useState<CoffeeDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [ledgerEntries, setLedgerEntries] = useState<BrewLedgerEntry[]>([]);
+  const [ledgerCursor, setLedgerCursor] = useState<string | null>(null);
+  const [hasMoreLedger, setHasMoreLedger] = useState(false);
+  const [isLedgerLoading, setIsLedgerLoading] = useState(true);
+  const [isLedgerLoadingMore, setIsLedgerLoadingMore] = useState(false);
+  const [ledgerFilterFrom, setLedgerFilterFrom] = useState("");
+  const [ledgerFilterTo, setLedgerFilterTo] = useState("");
+  const [ledgerSortOrder, setLedgerSortOrder] = useState<"desc" | "asc">("desc");
 
   const availableProfiles = useMemo(
     () => getDeviceProfilesAsPhaseProfiles(deviceProfiles),
@@ -45,8 +67,8 @@ export function CoffeeHomePage({ coffeeId }: { coffeeId: number }) {
   );
 
   const latestLedgerEntry = useMemo(
-    () => coffee?.ledgerEntries[0] ?? null,
-    [coffee?.ledgerEntries],
+    () => coffee?.latestLedgerEntry ?? null,
+    [coffee?.latestLedgerEntry],
   );
 
   const loadCoffee = useCallback(async () => {
@@ -72,6 +94,79 @@ export function CoffeeHomePage({ coffeeId }: { coffeeId: number }) {
   useEffect(() => {
     void loadCoffee();
   }, [loadCoffee]);
+
+  const loadLedgerPage = useCallback(
+    async (reset: boolean) => {
+      if (!reset && (!hasMoreLedger || isLedgerLoadingMore)) return;
+
+      if (reset) {
+        setIsLedgerLoading(true);
+      } else {
+        setIsLedgerLoadingMore(true);
+      }
+
+      try {
+        const params = new URLSearchParams();
+        params.set("limit", "5");
+        if (!reset && ledgerCursor) {
+          params.set("cursor", ledgerCursor);
+        }
+        if (ledgerFilterFrom) {
+          params.set("from", toDayBoundaryIso(ledgerFilterFrom, "start"));
+        }
+        if (ledgerFilterTo) {
+          params.set("to", toDayBoundaryIso(ledgerFilterTo, "end"));
+        }
+        params.set("sort", ledgerSortOrder);
+
+        const response = await fetch(`/api/coffees/${coffeeId}/ledger?${params.toString()}`, {
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          throw new Error("Ledger fetch failed");
+        }
+
+        const data = (await response.json()) as BrewLedgerPage;
+        setLedgerEntries((current) =>
+          reset ? data.entries : [...current, ...data.entries],
+        );
+        setLedgerCursor(data.nextCursor);
+        setHasMoreLedger(data.nextCursor != null);
+      } catch (error) {
+        console.error(error);
+        if (reset) {
+          setLedgerEntries([]);
+          setLedgerCursor(null);
+          setHasMoreLedger(false);
+        }
+      } finally {
+        if (reset) {
+          setIsLedgerLoading(false);
+        } else {
+          setIsLedgerLoadingMore(false);
+        }
+      }
+    },
+    [
+      coffeeId,
+      hasMoreLedger,
+      isLedgerLoadingMore,
+      ledgerCursor,
+      ledgerFilterFrom,
+      ledgerFilterTo,
+      ledgerSortOrder,
+      toDayBoundaryIso,
+    ],
+  );
+
+  useEffect(() => {
+    void loadLedgerPage(true);
+  }, [coffeeId, ledgerFilterFrom, ledgerFilterTo, ledgerSortOrder]);
+
+  const handleLedgerRefresh = useCallback(() => {
+    void loadCoffee();
+    void loadLedgerPage(true);
+  }, [loadCoffee, loadLedgerPage]);
 
   const handleBrewWithProfile = useCallback(
     (profileId: string) => {
@@ -218,18 +313,17 @@ export function CoffeeHomePage({ coffeeId }: { coffeeId: number }) {
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back
           </Button>
-          <Button
-            variant="outline"
-            onClick={loadCoffee}
-            className="cursor-pointer"
-          >
-            Refresh
-          </Button>
-          <CoffeeFormDialog
-            coffee={coffee}
-            onSaved={(updatedCoffee) => setCoffee(updatedCoffee)}
-            triggerLabel="Edit coffee"
-          />
+          <div className="flex flex-wrap items-center gap-3">
+            <CoffeeBagActionDialog
+              coffee={coffee}
+              onUpdated={(updatedCoffee) => setCoffee(updatedCoffee)}
+            />
+            <CoffeeFormDialog
+              coffee={coffee}
+              onSaved={(updatedCoffee) => setCoffee(updatedCoffee)}
+              triggerLabel="Edit coffee"
+            />
+          </div>
         </div>
       </div>
 
@@ -300,7 +394,31 @@ export function CoffeeHomePage({ coffeeId }: { coffeeId: number }) {
                   Totals
                 </div>
                 <div className="mt-1 text-foreground">
-                  {coffee.recipeCount} recipes · {coffee.ledgerCount} ledger brews
+                  {coffee.recipeCount} recipes · {coffee.ledgerCount} ledger brews ·{" "}
+                  {coffee.bagsConsumed} bags
+                </div>
+              </div>
+              <div>
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Rotation
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-foreground">
+                  <CoffeeRotationStatusIcon status={coffee.rotationStatus} />
+                  {getCoffeeRotationStatusLabel(coffee.rotationStatus)}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Bag date
+                </div>
+                <div className="mt-1 text-foreground">
+                  {coffee.rotationStatus === "active"
+                    ? formatDateOnly(
+                        coffee.currentBag?.openedAt ?? coffee.latestBag?.openedAt,
+                      )
+                    : formatDateOnly(
+                        coffee.latestBag?.finishedAt ?? coffee.latestBag?.openedAt,
+                      )}
                 </div>
               </div>
             </div>
@@ -420,6 +538,14 @@ export function CoffeeHomePage({ coffeeId }: { coffeeId: number }) {
                   ) ?? "—"}
                 </span>
               </div>
+              <div className="flex w-fit max-w-full flex-wrap items-baseline gap-x-1 gap-y-0">
+                <span className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Extract
+                </span>
+                <span className="text-foreground">
+                  {formatSeconds(latestLedgerEntry.brewTimeSeconds)}
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -435,8 +561,20 @@ export function CoffeeHomePage({ coffeeId }: { coffeeId: number }) {
 
         <CoffeeLedgerTable
           coffee={coffee}
+          availableProfiles={availableProfiles}
+          entries={ledgerEntries}
+          filterFrom={ledgerFilterFrom}
+          filterTo={ledgerFilterTo}
+          sortOrder={ledgerSortOrder}
+          hasMore={hasMoreLedger}
+          isLoading={isLedgerLoading}
+          isLoadingMore={isLedgerLoadingMore}
+          onFilterFromChange={setLedgerFilterFrom}
+          onFilterToChange={setLedgerFilterTo}
+          onSortOrderChange={setLedgerSortOrder}
+          onLoadMore={() => void loadLedgerPage(false)}
           onRebrew={(href) => router.push(href)}
-          onLedgerConverted={loadCoffee}
+          onLedgerConverted={handleLedgerRefresh}
         />
 
         {availableProfiles.length > 0 ? (

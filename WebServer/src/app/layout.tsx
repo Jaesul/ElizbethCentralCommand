@@ -32,9 +32,10 @@ const geist = Geist({
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  // suppressHydrationWarning on html/body: extensions (e.g. Dark Reader) mutate the DOM before hydrate.
   return (
-    <html lang="en" className={`${geist.variable}`}>
-      <body>
+    <html lang="en" className={`${geist.variable}`} suppressHydrationWarning>
+      <body suppressHydrationWarning>
         <ToastProvider>
           <FlowConnectionProvider>
             <AppNav />

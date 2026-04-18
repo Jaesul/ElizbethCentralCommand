@@ -80,6 +80,14 @@ export function toDateInputValue(value: string | null | undefined) {
   return parsed.toISOString().slice(0, 10);
 }
 
+export function toDateTimeLocalValue(value: string | null | undefined) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
 export function buildBrewHref(
   profileRef: string | null | undefined,
   options: {

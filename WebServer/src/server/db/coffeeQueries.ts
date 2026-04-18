@@ -1,21 +1,40 @@
-import { desc, eq } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  gte,
+  isNull,
+  lt,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 
 import { formatBrewRatio } from "~/lib/coffeeUtils";
 import { db } from "~/server/db";
 import {
   brewLedgerEntries,
+  coffeeBags,
   coffeeRecipes,
   coffees,
 } from "~/server/db/schema";
 import type {
+  CoffeeBag,
   BrewLedgerEntry,
   CoffeeCreateInput,
   CoffeeDetail,
+  CoffeeListQueryInput,
+  CoffeeRotationStatus,
   CoffeeRecipe,
   CoffeeSummary,
   CoffeeUpdateInput,
+  FinishCoffeeBagInput,
   LedgerCreateInput,
   LedgerUpdateInput,
+  OpenCoffeeBagInput,
   RecipeCreateInput,
   RecipeUpdateInput,
 } from "~/types/coffee";
@@ -24,11 +43,19 @@ type CoffeeRow = typeof coffees.$inferSelect;
 type CoffeeInsert = typeof coffees.$inferInsert;
 type CoffeeRecipeRow = typeof coffeeRecipes.$inferSelect;
 type CoffeeRecipeInsert = typeof coffeeRecipes.$inferInsert;
+type CoffeeBagRow = typeof coffeeBags.$inferSelect;
+type CoffeeBagInsert = typeof coffeeBags.$inferInsert;
 type BrewLedgerEntryRow = typeof brewLedgerEntries.$inferSelect;
 type BrewLedgerInsert = typeof brewLedgerEntries.$inferInsert;
 
-function toIsoString(value: Date | null | undefined) {
-  return value ? value.toISOString() : null;
+function toIsoString(value: Date | string | null | undefined) {
+  if (value == null) return null;
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+
+  return value.toISOString();
 }
 
 function serializeRecipe(row: CoffeeRecipeRow): CoffeeRecipe {
@@ -74,19 +101,43 @@ function serializeLedgerEntry(row: BrewLedgerEntryRow): BrewLedgerEntry {
     waterRecipe: row.waterRecipe,
     tastingNotes: row.tastingNotes,
     notes: row.notes,
+    telemetryTrace: row.telemetryTrace,
     createdAt: row.createdAt.toISOString(),
     updatedAt: toIsoString(row.updatedAt),
   };
 }
 
-function serializeCoffeeSummary(
+function serializeCoffeeBag(row: CoffeeBagRow): CoffeeBag {
+  return {
+    id: row.id,
+    coffeeId: row.coffeeId,
+    openedAt: row.openedAt.toISOString(),
+    finishedAt: toIsoString(row.finishedAt),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: toIsoString(row.updatedAt),
+  };
+}
+
+function getCoffeeBagState(rows: CoffeeBagRow[]) {
+  const currentBagRow = rows.find((row) => row.finishedAt == null) ?? null;
+  const latestBagRow = rows[0] ?? null;
+
+  return {
+    currentBag: currentBagRow ? serializeCoffeeBag(currentBagRow) : null,
+    latestBag: latestBagRow ? serializeCoffeeBag(latestBagRow) : null,
+    bagsConsumed: rows.length,
+    rotationStatus: (currentBagRow ? "active" : "finished") as CoffeeRotationStatus,
+  };
+}
+
+function serializeCoffeeSummaryFromCounts(
   row: CoffeeRow,
-  recipes: CoffeeRecipeRow[],
-  ledgerEntries: BrewLedgerEntryRow[],
+  recipeCount: number,
+  ledgerCount: number,
+  lastBrewedAt: Date | string | null | undefined,
+  bagRows: CoffeeBagRow[],
 ): CoffeeSummary {
-  const lastBrewedAt = [...ledgerEntries]
-    .sort((left, right) => right.brewedAt.getTime() - left.brewedAt.getTime())
-    .at(0)?.brewedAt;
+  const bagState = getCoffeeBagState(bagRows);
 
   return {
     id: row.id,
@@ -105,10 +156,120 @@ function serializeCoffeeSummary(
     defaultBrewMethod: row.defaultBrewMethod as CoffeeSummary["defaultBrewMethod"],
     createdAt: row.createdAt.toISOString(),
     updatedAt: toIsoString(row.updatedAt),
-    recipeCount: recipes.length,
-    ledgerCount: ledgerEntries.length,
+    recipeCount,
+    ledgerCount,
     lastBrewedAt: toIsoString(lastBrewedAt),
+    bagsConsumed: bagState.bagsConsumed,
+    rotationStatus: bagState.rotationStatus,
+    currentBag: bagState.currentBag,
+    latestBag: bagState.latestBag,
   };
+}
+
+function toCoffeeBagInsert(
+  coffeeId: number,
+  openedAt: Date,
+): CoffeeBagInsert {
+  return {
+    coffeeId,
+    openedAt,
+  };
+}
+
+function getCoffeeFilterDate(coffee: CoffeeSummary) {
+  return (
+    coffee.currentBag?.openedAt ??
+    coffee.latestBag?.finishedAt ??
+    coffee.latestBag?.openedAt ??
+    coffee.purchaseDate ??
+    coffee.roastDate ??
+    coffee.lastBrewedAt ??
+    coffee.createdAt
+  );
+}
+
+function matchesCoffeeListFilters(
+  coffee: CoffeeSummary,
+  filters: CoffeeListQueryInput,
+) {
+  if (filters.status === "active" && coffee.rotationStatus !== "active") {
+    return false;
+  }
+
+  if (filters.status === "finished" && coffee.rotationStatus !== "finished") {
+    return false;
+  }
+
+  const filterDate = new Date(getCoffeeFilterDate(coffee));
+  if (filters.from && filterDate < new Date(filters.from)) {
+    return false;
+  }
+  if (filters.to && filterDate > new Date(filters.to)) {
+    return false;
+  }
+
+  if (filters.minRecipes != null && coffee.recipeCount < filters.minRecipes) {
+    return false;
+  }
+  if (filters.maxRecipes != null && coffee.recipeCount > filters.maxRecipes) {
+    return false;
+  }
+  if (filters.minBrews != null && coffee.ledgerCount < filters.minBrews) {
+    return false;
+  }
+  if (filters.maxBrews != null && coffee.ledgerCount > filters.maxBrews) {
+    return false;
+  }
+  if (
+    filters.minBagsConsumed != null &&
+    coffee.bagsConsumed < filters.minBagsConsumed
+  ) {
+    return false;
+  }
+  if (
+    filters.maxBagsConsumed != null &&
+    coffee.bagsConsumed > filters.maxBagsConsumed
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function compareCoffeeSummaries(left: CoffeeSummary, right: CoffeeSummary) {
+  if (left.rotationStatus !== right.rotationStatus) {
+    return left.rotationStatus === "active" ? -1 : 1;
+  }
+
+  const leftDate = new Date(getCoffeeFilterDate(left)).getTime();
+  const rightDate = new Date(getCoffeeFilterDate(right)).getTime();
+  if (leftDate !== rightDate) {
+    return rightDate - leftDate;
+  }
+
+  return right.id - left.id;
+}
+
+async function listCoffeeBagRows() {
+  return db
+    .select()
+    .from(coffeeBags)
+    .orderBy(desc(coffeeBags.openedAt), desc(coffeeBags.id));
+}
+
+function groupBagRowsByCoffee(rows: CoffeeBagRow[]) {
+  const rowsByCoffee = new Map<number, CoffeeBagRow[]>();
+
+  for (const row of rows) {
+    const existing = rowsByCoffee.get(row.coffeeId);
+    if (existing) {
+      existing.push(row);
+    } else {
+      rowsByCoffee.set(row.coffeeId, [row]);
+    }
+  }
+
+  return rowsByCoffee;
 }
 
 function toCoffeeCreateInsert(input: CoffeeCreateInput): CoffeeInsert {
@@ -243,6 +404,7 @@ function toLedgerInsert(input: LedgerCreateInput): BrewLedgerInsert {
     waterRecipe: input.waterRecipe ?? null,
     tastingNotes: input.tastingNotes ?? null,
     notes: input.notes ?? null,
+    telemetryTrace: input.telemetryTrace ?? null,
   };
 }
 
@@ -293,33 +455,89 @@ function toLedgerUpdateInsert(
         ? undefined
         : (input.tastingNotes ?? null),
     notes: input.notes === undefined ? undefined : (input.notes ?? null),
+    telemetryTrace:
+      input.telemetryTrace === undefined ? undefined : (input.telemetryTrace ?? null),
   };
 }
 
-export async function listCoffees() {
-  const rows = await db.query.coffees.findMany({
-    with: {
-      recipes: true,
-      ledgerEntries: true,
-    },
-    orderBy: (table, helpers) => [helpers.desc(table.createdAt)],
-  });
+export async function listCoffees(
+  filters: CoffeeListQueryInput = {
+    status: "active",
+    from: null,
+    to: null,
+    minRecipes: null,
+    maxRecipes: null,
+    minBrews: null,
+    maxBrews: null,
+    minBagsConsumed: null,
+    maxBagsConsumed: null,
+  },
+) {
+  const [coffeeRows, recipeCountRows, ledgerStatsRows, bagRows] = await Promise.all([
+    db.select().from(coffees).orderBy(desc(coffees.createdAt)),
+    db
+      .select({
+        coffeeId: coffeeRecipes.coffeeId,
+        recipeCount: count(),
+      })
+      .from(coffeeRecipes)
+      .groupBy(coffeeRecipes.coffeeId),
+    db
+      .select({
+        coffeeId: brewLedgerEntries.coffeeId,
+        ledgerCount: count(),
+        lastBrewedAt: sql<Date | null>`max(${brewLedgerEntries.brewedAt})`,
+      })
+      .from(brewLedgerEntries)
+      .groupBy(brewLedgerEntries.coffeeId),
+    listCoffeeBagRows(),
+  ]);
 
-  return rows.map((row) =>
-    serializeCoffeeSummary(row, row.recipes, row.ledgerEntries),
+  const recipeCountMap = new Map(
+    recipeCountRows.map((row) => [row.coffeeId, row.recipeCount]),
   );
+  const ledgerStatsMap = new Map(
+    ledgerStatsRows.map((row) => [
+      row.coffeeId,
+      {
+        ledgerCount: row.ledgerCount,
+        lastBrewedAt: row.lastBrewedAt,
+      },
+    ]),
+  );
+  const bagRowsByCoffee = groupBagRowsByCoffee(bagRows);
+
+  return coffeeRows
+    .map((row) => {
+      const ledgerStats = ledgerStatsMap.get(row.id);
+      return serializeCoffeeSummaryFromCounts(
+        row,
+        recipeCountMap.get(row.id) ?? 0,
+        ledgerStats?.ledgerCount ?? 0,
+        ledgerStats?.lastBrewedAt,
+        bagRowsByCoffee.get(row.id) ?? [],
+      );
+    })
+    .filter((coffee) => matchesCoffeeListFilters(coffee, filters))
+    .sort(compareCoffeeSummaries);
 }
 
 export async function getCoffeeDetailById(
   coffeeId: number,
 ): Promise<CoffeeDetail | null> {
-  const row = await db.query.coffees.findFirst({
-    where: (table, helpers) => helpers.eq(table.id, coffeeId),
-    with: {
-      recipes: true,
-      ledgerEntries: true,
-    },
-  });
+  const [row, bagRows] = await Promise.all([
+    db.query.coffees.findFirst({
+      where: (table, helpers) => helpers.eq(table.id, coffeeId),
+      with: {
+        recipes: true,
+        ledgerEntries: true,
+      },
+    }),
+    db.query.coffeeBags.findMany({
+      where: (table, helpers) => helpers.eq(table.coffeeId, coffeeId),
+      orderBy: (table, helpers) => [helpers.desc(table.openedAt), helpers.desc(table.id)],
+    }),
+  ]);
 
   if (!row) return null;
 
@@ -331,21 +549,95 @@ export async function getCoffeeDetailById(
     .map(serializeLedgerEntry);
 
   return {
-    ...serializeCoffeeSummary(row, row.recipes, row.ledgerEntries),
+    ...serializeCoffeeSummaryFromCounts(
+      row,
+      row.recipes.length,
+      row.ledgerEntries.length,
+      row.ledgerEntries
+        .slice()
+        .sort((left, right) => right.brewedAt.getTime() - left.brewedAt.getTime())
+        .at(0)?.brewedAt,
+      bagRows,
+    ),
     recipes,
     ledgerEntries,
+    latestLedgerEntry: ledgerEntries[0] ?? null,
+    bagHistory: bagRows.map(serializeCoffeeBag),
+  };
+}
+
+export async function getCoffeePageDetailById(
+  coffeeId: number,
+): Promise<CoffeeDetail | null> {
+  const [row, bagRows] = await Promise.all([
+    db.query.coffees.findFirst({
+      where: (table, helpers) => helpers.eq(table.id, coffeeId),
+      with: {
+        recipes: true,
+      },
+    }),
+    db.query.coffeeBags.findMany({
+      where: (table, helpers) => helpers.eq(table.coffeeId, coffeeId),
+      orderBy: (table, helpers) => [helpers.desc(table.openedAt), helpers.desc(table.id)],
+    }),
+  ]);
+
+  if (!row) return null;
+
+  const recipes = [...row.recipes]
+    .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())
+    .map(serializeRecipe);
+
+  const [ledgerCountRow] = await db
+    .select({ value: count() })
+    .from(brewLedgerEntries)
+    .where(eq(brewLedgerEntries.coffeeId, coffeeId));
+
+  const latestLedgerRow = await db.query.brewLedgerEntries.findFirst({
+    where: (table, helpers) => helpers.eq(table.coffeeId, coffeeId),
+    orderBy: (table, helpers) => [helpers.desc(table.brewedAt), helpers.desc(table.id)],
+  });
+
+  return {
+    ...serializeCoffeeSummaryFromCounts(
+      row,
+      recipes.length,
+      ledgerCountRow?.value ?? 0,
+      latestLedgerRow?.brewedAt,
+      bagRows,
+    ),
+    recipes,
+    ledgerEntries: [],
+    latestLedgerEntry: latestLedgerRow ? serializeLedgerEntry(latestLedgerRow) : null,
+    bagHistory: bagRows.map(serializeCoffeeBag),
   };
 }
 
 export async function createCoffee(input: CoffeeCreateInput) {
-  const [row] = await db
-    .insert(coffees)
-    .values(toCoffeeCreateInsert(input))
-    .returning();
+  const row = await db.transaction(async (tx) => {
+    const [createdCoffee] = await tx
+      .insert(coffees)
+      .values(toCoffeeCreateInsert(input))
+      .returning();
+
+    if (!createdCoffee) {
+      throw new Error("Coffee insert failed");
+    }
+
+    await tx.insert(coffeeBags).values(
+      toCoffeeBagInsert(
+        createdCoffee.id,
+        input.purchaseDate ? new Date(input.purchaseDate) : new Date(),
+      ),
+    );
+
+    return createdCoffee;
+  });
+
   if (!row) {
     throw new Error("Coffee insert failed");
   }
-  return getCoffeeDetailById(row.id);
+  return getCoffeePageDetailById(row.id);
 }
 
 export async function updateCoffee(coffeeId: number, input: CoffeeUpdateInput) {
@@ -356,7 +648,77 @@ export async function updateCoffee(coffeeId: number, input: CoffeeUpdateInput) {
     .where(eq(coffees.id, coffeeId))
     .returning();
 
-  return row ? getCoffeeDetailById(row.id) : null;
+  return row ? getCoffeePageDetailById(row.id) : null;
+}
+
+export async function finishCoffeeBag(
+  coffeeId: number,
+  input: FinishCoffeeBagInput,
+) {
+  const finishedAt = input.finishedAt ? new Date(input.finishedAt) : new Date();
+
+  const result = await db.transaction(async (tx) => {
+    const coffee = await tx.query.coffees.findFirst({
+      where: (table, helpers) => helpers.eq(table.id, coffeeId),
+    });
+    if (!coffee) {
+      return null;
+    }
+
+    const activeBag = await tx.query.coffeeBags.findFirst({
+      where: (table, helpers) =>
+        and(eq(table.coffeeId, coffeeId), isNull(table.finishedAt)),
+      orderBy: (table, helpers) => [helpers.desc(table.openedAt), helpers.desc(table.id)],
+    });
+
+    if (!activeBag) {
+      throw new Error("No active bag to finish");
+    }
+
+    if (finishedAt.getTime() < activeBag.openedAt.getTime()) {
+      throw new Error("Finished date must be after the bag was opened");
+    }
+
+    await tx
+      .update(coffeeBags)
+      .set({ finishedAt, updatedAt: new Date() })
+      .where(eq(coffeeBags.id, activeBag.id));
+
+    return coffee.id;
+  });
+
+  return result == null ? null : getCoffeePageDetailById(result);
+}
+
+export async function openCoffeeBag(
+  coffeeId: number,
+  input: OpenCoffeeBagInput,
+) {
+  const openedAt = input.openedAt ? new Date(input.openedAt) : new Date();
+
+  const result = await db.transaction(async (tx) => {
+    const coffee = await tx.query.coffees.findFirst({
+      where: (table, helpers) => helpers.eq(table.id, coffeeId),
+    });
+    if (!coffee) {
+      return null;
+    }
+
+    const activeBag = await tx.query.coffeeBags.findFirst({
+      where: (table, helpers) =>
+        and(eq(table.coffeeId, coffeeId), isNull(table.finishedAt)),
+      orderBy: (table, helpers) => [helpers.desc(table.openedAt), helpers.desc(table.id)],
+    });
+
+    if (activeBag) {
+      throw new Error("This coffee already has an active bag");
+    }
+
+    await tx.insert(coffeeBags).values(toCoffeeBagInsert(coffeeId, openedAt));
+    return coffee.id;
+  });
+
+  return result == null ? null : getCoffeePageDetailById(result);
 }
 
 export async function createRecipe(input: RecipeCreateInput) {
@@ -389,6 +751,14 @@ export async function getRecipeById(recipeId: number) {
   return row ? serializeRecipe(row) : null;
 }
 
+export async function deleteRecipe(recipeId: number) {
+  const deleted = await db
+    .delete(coffeeRecipes)
+    .where(eq(coffeeRecipes.id, recipeId))
+    .returning({ id: coffeeRecipes.id });
+  return deleted.length > 0;
+}
+
 export async function createLedgerEntry(input: LedgerCreateInput) {
   const [row] = await db
     .insert(brewLedgerEntries)
@@ -406,6 +776,63 @@ export async function getLedgerEntryById(ledgerEntryId: number) {
   });
 
   return row ? serializeLedgerEntry(row) : null;
+}
+
+export async function listLedgerEntriesByCoffee(
+  coffeeId: number,
+  options: {
+    limit?: number;
+    cursor?: { brewedAt: Date; id: number } | null;
+    from?: Date | null;
+    to?: Date | null;
+    sort?: "asc" | "desc";
+  } = {},
+) {
+  const limit = Math.min(Math.max(options.limit ?? 5, 1), 5);
+  const sort = options.sort ?? "desc";
+  const where = and(
+    eq(brewLedgerEntries.coffeeId, coffeeId),
+    options.from ? gte(brewLedgerEntries.brewedAt, options.from) : undefined,
+    options.to ? lte(brewLedgerEntries.brewedAt, options.to) : undefined,
+    options.cursor
+      ? or(
+          sort === "desc"
+            ? lt(brewLedgerEntries.brewedAt, options.cursor.brewedAt)
+            : gt(brewLedgerEntries.brewedAt, options.cursor.brewedAt),
+          and(
+            eq(brewLedgerEntries.brewedAt, options.cursor.brewedAt),
+            sort === "desc"
+              ? lt(brewLedgerEntries.id, options.cursor.id)
+              : gt(brewLedgerEntries.id, options.cursor.id),
+          ),
+        )
+      : undefined,
+  );
+
+  const rows = await db
+    .select()
+    .from(brewLedgerEntries)
+    .where(where)
+    .orderBy(
+      sort === "desc" ? desc(brewLedgerEntries.brewedAt) : asc(brewLedgerEntries.brewedAt),
+      sort === "desc" ? desc(brewLedgerEntries.id) : asc(brewLedgerEntries.id),
+    )
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const pageRows = hasMore ? rows.slice(0, limit) : rows;
+  const entries = pageRows.map(serializeLedgerEntry);
+  const lastRow = pageRows.at(-1);
+
+  return {
+    entries,
+    nextCursor: hasMore && lastRow
+      ? {
+          brewedAt: lastRow.brewedAt.toISOString(),
+          id: lastRow.id,
+        }
+      : null,
+  };
 }
 
 export async function updateLedgerEntry(

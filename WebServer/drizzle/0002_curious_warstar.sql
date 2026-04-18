@@ -1,0 +1,1 @@
+ALTER TABLE "elizbeth_central_command_brew_ledger_entry" ADD COLUMN "telemetryTrace" jsonb;

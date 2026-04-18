@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
+import { SafeLucide } from "~/components/SafeLucide";
 import { BeanPounderLogo } from "~/components/BeanPounderLogo";
 import { CoffeeSelector } from "~/components/CoffeeSelector";
 import { Card, CardContent } from "~/components/ui/card";
@@ -32,7 +33,7 @@ export function ProfilesHomePage() {
   const loadCoffees = useCallback(async () => {
     setIsCoffeeLoading(true);
     try {
-      const response = await fetch("/api/coffees", {
+      const response = await fetch("/api/coffees?status=all", {
         cache: "no-store",
       });
       if (!response.ok) {
@@ -40,7 +41,7 @@ export function ProfilesHomePage() {
       }
 
       const data = (await response.json()) as CoffeeSummary[];
-      setCoffees(data);
+      setCoffees(data.slice(0, 5));
     } catch (error) {
       console.error(error);
       setCoffees([]);
@@ -140,7 +141,7 @@ export function ProfilesHomePage() {
             </p>
           </div>
           <Button onClick={() => router.push("/profiles/new")} size="sm" variant="outline">
-            <Plus className="mr-2 h-4 w-4" />
+            <SafeLucide icon={Plus} className="mr-2 h-4 w-4" />
             New Profile
           </Button>
         </div>

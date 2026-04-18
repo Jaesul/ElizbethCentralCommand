@@ -28,7 +28,7 @@ import {
   calculateBrewRatio,
   formatBrewRatio,
   getBrewMethodLabel,
-  toDateInputValue,
+  toDateTimeLocalValue,
 } from "~/lib/coffeeUtils";
 import { calculatePhaseProfileDuration } from "~/lib/profileUtils";
 import {
@@ -45,6 +45,7 @@ import type {
   CoffeeDetail,
   CoffeeRecipe,
   CoffeeSummary,
+  LedgerTelemetryTrace,
 } from "~/types/coffee";
 import type { PhaseProfile } from "~/types/profiles";
 
@@ -128,6 +129,17 @@ export function ProfileBrewPage() {
     waterRecipe: "",
     rating: "",
   });
+  const [ledgerShotSnapshot, setLedgerShotSnapshot] = useState<{
+    brewedAt: string | null;
+    yieldGrams: number | null;
+    brewTimeSeconds: number | null;
+    telemetryTrace: LedgerTelemetryTrace | null;
+  }>({
+    brewedAt: null,
+    yieldGrams: null,
+    brewTimeSeconds: null,
+    telemetryTrace: null,
+  });
 
   const {
     isConnected: flowConnected,
@@ -171,7 +183,7 @@ export function ProfileBrewPage() {
 
   const loadCoffees = useCallback(async () => {
     try {
-      const response = await fetch("/api/coffees", {
+      const response = await fetch("/api/coffees?status=active", {
         cache: "no-store",
       });
       if (!response.ok) {
@@ -228,7 +240,7 @@ export function ProfileBrewPage() {
     setSelectedRecipeId(entry.recipeId ?? null);
     setBrewForm((current) => ({
       ...current,
-      brewedAt: toDateInputValue(entry.brewedAt),
+      brewedAt: toDateTimeLocalValue(entry.brewedAt),
       brewMethod: entry.brewMethod,
       doseGrams: entry.doseGrams?.toString() ?? "",
       yieldGrams: entry.yieldGrams?.toString() ?? "",
@@ -447,6 +459,9 @@ export function ProfileBrewPage() {
   const measuredYield = flowShot?.shotWeight ?? flowSensor?.weight ?? null;
   const measuredBrewSeconds =
     flowShot?.timeInShot != null ? Math.round(flowShot.timeInShot / 1000) : null;
+  const snapshotYield = ledgerShotSnapshot.yieldGrams ?? measuredYield;
+  const snapshotBrewSeconds =
+    ledgerShotSnapshot.brewTimeSeconds ?? measuredBrewSeconds;
 
   const activeRecipe = useMemo(
     () =>
@@ -517,30 +532,70 @@ export function ProfileBrewPage() {
   const computedRatioLabel = formatBrewRatio(
     brewForm.brewRatio ? Number(brewForm.brewRatio) : null,
     brewForm.doseGrams ? Number(brewForm.doseGrams) : null,
-    brewForm.yieldGrams ? Number(brewForm.yieldGrams) : measuredYield,
+    brewForm.yieldGrams ? Number(brewForm.yieldGrams) : snapshotYield,
   );
 
-  const primeLedgerFormDefaults = useCallback(() => {
+  const buildTelemetryTrace = useCallback((): LedgerTelemetryTrace | null => {
+    if (livePoints.length === 0) return null;
+    return {
+      points: livePoints.map((point) => ({ ...point })),
+      phaseMarkers: phaseMarkers.map((marker) => ({ ...marker })),
+    };
+  }, [livePoints, phaseMarkers]);
+
+  const captureLedgerShotSnapshot = useCallback(() => {
+    const fallbackYield =
+      measuredYield ??
+      [...livePoints]
+        .reverse()
+        .find((point) => typeof point.weight === "number")?.weight ??
+      null;
+    const fallbackBrewTimeSeconds =
+      measuredBrewSeconds ??
+      (livePoints.length > 0
+        ? Math.round((livePoints[livePoints.length - 1]?.tMs ?? 0) / 1000)
+        : null);
+    const snapshot = {
+      brewedAt: new Date().toISOString(),
+      yieldGrams: fallbackYield,
+      brewTimeSeconds: fallbackBrewTimeSeconds,
+      telemetryTrace: buildTelemetryTrace(),
+    };
+    setLedgerShotSnapshot(snapshot);
+    return snapshot;
+  }, [buildTelemetryTrace, livePoints, measuredBrewSeconds, measuredYield]);
+
+  const primeLedgerFormDefaults = useCallback((snapshot?: {
+    brewedAt: string | null;
+    yieldGrams: number | null;
+    brewTimeSeconds: number | null;
+    telemetryTrace: LedgerTelemetryTrace | null;
+  }) => {
+    const frozenBrewedAt = snapshot?.brewedAt ?? ledgerShotSnapshot.brewedAt;
+    const frozenYield = snapshot?.yieldGrams ?? ledgerShotSnapshot.yieldGrams;
+    const frozenBrewSeconds =
+      snapshot?.brewTimeSeconds ?? ledgerShotSnapshot.brewTimeSeconds;
     setBrewForm((current) => ({
       ...current,
       brewedAt:
-        current.brewedAt ||
-        new Date().toISOString().slice(0, 10),
+        frozenBrewedAt != null
+          ? toDateTimeLocalValue(frozenBrewedAt)
+          : current.brewedAt,
       yieldGrams:
-        measuredYield != null ? measuredYield.toFixed(1) : current.yieldGrams,
+        frozenYield != null ? frozenYield.toFixed(1) : current.yieldGrams,
       brewTimeSeconds:
-        measuredBrewSeconds != null
-          ? String(measuredBrewSeconds)
+        frozenBrewSeconds != null
+          ? String(frozenBrewSeconds)
           : current.brewTimeSeconds,
       brewRatio:
-        measuredYield != null
+        frozenYield != null
           ? (calculateBrewRatio(
               current.doseGrams ? Number(current.doseGrams) : null,
-              measuredYield,
+              frozenYield,
             )?.toFixed(2) ?? current.brewRatio)
           : current.brewRatio,
     }));
-  }, [measuredBrewSeconds, measuredYield]);
+  }, [ledgerShotSnapshot.brewTimeSeconds, ledgerShotSnapshot.brewedAt, ledgerShotSnapshot.yieldGrams]);
 
   const handleCoffeeSelect = useCallback(
     (coffeeIdValue: string) => {
@@ -638,14 +693,15 @@ export function ProfileBrewPage() {
 
   const shotWasActiveRef = useRef(false);
   const ledgerDialogQueuedRef = useRef(false);
+  const lastQueuedStopLogRef = useRef<string | null>(null);
   const ledgerDialogTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const queueLedgerDialog = useCallback(() => {
     if (ledgerDialogQueuedRef.current) return;
 
     ledgerDialogQueuedRef.current = true;
-    shotWasActiveRef.current = false;
-    primeLedgerFormDefaults();
+    const snapshot = captureLedgerShotSnapshot();
+    primeLedgerFormDefaults(snapshot);
     setIsPreparingLedgerDialog(true);
 
     if (ledgerDialogTimeoutRef.current != null) {
@@ -657,21 +713,29 @@ export function ProfileBrewPage() {
       setIsLedgerDialogOpen(true);
       ledgerDialogTimeoutRef.current = null;
     }, 500);
-  }, [primeLedgerFormDefaults]);
+  }, [captureLedgerShotSnapshot, primeLedgerFormDefaults]);
 
   useEffect(() => {
-    const shotIsActive =
-      flowSensor?.brewActive === true ||
-      brewState === "brewing" ||
-      brewState === "stopping";
+    const shotIsRunning =
+      flowSensor?.brewActive === true || brewState === "brewing";
+    const shotIsStopping = brewState === "stopping";
 
-    if (shotIsActive) {
+    if (shotIsRunning) {
+      if (!shotWasActiveRef.current) {
+        ledgerDialogQueuedRef.current = false;
+        lastQueuedStopLogRef.current = null;
+      }
       shotWasActiveRef.current = true;
-      ledgerDialogQueuedRef.current = false;
       return;
     }
 
-    if (shotWasActiveRef.current) {
+    // While the machine reports "stopping", wait for the next transition
+    // or STOP log instead of re-arming the ledger dialog every render.
+    if (shotIsStopping) {
+      return;
+    }
+
+    if (shotWasActiveRef.current && !ledgerDialogQueuedRef.current) {
       queueLedgerDialog();
     }
   }, [brewState, flowSensor?.brewActive, queueLedgerDialog]);
@@ -680,7 +744,10 @@ export function ProfileBrewPage() {
     const lastLog = flowLogs.at(-1);
     if (!lastLog?.includes("[shot] STOP")) return;
     if (!shotWasActiveRef.current) return;
+    if (ledgerDialogQueuedRef.current) return;
+    if (lastQueuedStopLogRef.current === lastLog) return;
 
+    lastQueuedStopLogRef.current = lastLog;
     queueLedgerDialog();
   }, [flowLogs, queueLedgerDialog]);
 
@@ -721,19 +788,24 @@ export function ProfileBrewPage() {
         body: JSON.stringify({
           coffeeId: selectedCoffeeId,
           recipeId: selectedRecipeId,
-          brewedAt: brewForm.brewedAt || new Date().toISOString(),
+          brewedAt: brewForm.brewedAt
+            ? new Date(brewForm.brewedAt).toISOString()
+            : (ledgerShotSnapshot.brewedAt ?? new Date().toISOString()),
           brewMethod: brewForm.brewMethod,
           doseGrams: brewForm.doseGrams,
-          yieldGrams: brewForm.yieldGrams || measuredYield,
+          yieldGrams: brewForm.yieldGrams || ledgerShotSnapshot.yieldGrams,
           brewRatio:
             brewForm.brewRatio ||
             calculateBrewRatio(
               brewForm.doseGrams ? Number(brewForm.doseGrams) : null,
-              brewForm.yieldGrams ? Number(brewForm.yieldGrams) : measuredYield,
+              brewForm.yieldGrams
+                ? Number(brewForm.yieldGrams)
+                : ledgerShotSnapshot.yieldGrams,
             ),
           grindSetting: brewForm.grindSetting,
           waterTempC: brewForm.waterTempC,
-          brewTimeSeconds: brewForm.brewTimeSeconds || measuredBrewSeconds,
+          brewTimeSeconds:
+            brewForm.brewTimeSeconds || ledgerShotSnapshot.brewTimeSeconds,
           profileRef: brewProfileId,
           profileNameSnapshot: profile?.name ?? null,
           grinder: brewForm.grinder,
@@ -741,6 +813,7 @@ export function ProfileBrewPage() {
           waterRecipe: brewForm.waterRecipe,
           tastingNotes: brewForm.tastingNotes,
           notes: brewForm.notes,
+          telemetryTrace: ledgerShotSnapshot.telemetryTrace,
         }),
       });
 
@@ -770,10 +843,12 @@ export function ProfileBrewPage() {
     }
   }, [
     brewForm,
-    measuredBrewSeconds,
-    measuredYield,
     profile,
     brewProfileId,
+    ledgerShotSnapshot.brewTimeSeconds,
+    ledgerShotSnapshot.brewedAt,
+    ledgerShotSnapshot.telemetryTrace,
+    ledgerShotSnapshot.yieldGrams,
     selectedCoffee?.name,
     selectedCoffeeId,
     selectedRecipeId,
@@ -930,12 +1005,18 @@ export function ProfileBrewPage() {
             </Button>
           </div>
 
+          <LiveTelemetryChart
+            points={ledgerShotSnapshot.telemetryTrace?.points ?? []}
+            phaseMarkers={ledgerShotSnapshot.telemetryTrace?.phaseMarkers ?? []}
+            height={260}
+          />
+
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <label className="grid gap-1 text-sm">
               <span>Brewed at</span>
               <input
                 className={inputClassName}
-                type="date"
+                type="datetime-local"
                 value={brewForm.brewedAt}
                 onChange={(event) => setBrewFormField("brewedAt", event.target.value)}
               />
@@ -964,7 +1045,7 @@ export function ProfileBrewPage() {
                 className={inputClassName}
                 inputMode="decimal"
                 value={brewForm.yieldGrams}
-                placeholder={measuredYield != null ? measuredYield.toFixed(1) : ""}
+                placeholder={snapshotYield != null ? snapshotYield.toFixed(1) : ""}
                 onChange={(event) => setBrewFormField("yieldGrams", event.target.value)}
               />
             </label>
@@ -1003,7 +1084,7 @@ export function ProfileBrewPage() {
                 className={inputClassName}
                 inputMode="numeric"
                 value={brewForm.brewTimeSeconds}
-                placeholder={measuredBrewSeconds?.toString() ?? ""}
+                placeholder={snapshotBrewSeconds?.toString() ?? ""}
                 onChange={(event) =>
                   setBrewFormField("brewTimeSeconds", event.target.value)
                 }
@@ -1466,7 +1547,8 @@ export function ProfileBrewPage() {
           <Button
             onClick={() => {
               setIsPreparingLedgerDialog(false);
-              primeLedgerFormDefaults();
+              const snapshot = captureLedgerShotSnapshot();
+              primeLedgerFormDefaults(snapshot);
               setIsLedgerDialogOpen(true);
             }}
             disabled={selectedCoffeeId == null}

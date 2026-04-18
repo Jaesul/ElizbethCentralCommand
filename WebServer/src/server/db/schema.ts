@@ -1,6 +1,7 @@
 import { relations } from "drizzle-orm";
 import { index, pgTableCreator, primaryKey } from "drizzle-orm/pg-core";
 import { type AdapterAccount } from "next-auth/adapters";
+import type { LedgerTelemetryTrace } from "~/types/coffee";
 
 /**
  * This is an example of how to use the multi-project schema feature of Drizzle ORM. Use the same
@@ -170,6 +171,32 @@ export const coffeeRecipes = createTable(
   ],
 );
 
+export const coffeeBags = createTable(
+  "coffee_bag",
+  (d) => ({
+    id: d.integer().primaryKey().generatedByDefaultAsIdentity(),
+    coffeeId: d
+      .integer()
+      .notNull()
+      .references(() => coffees.id, { onDelete: "cascade" }),
+    openedAt: d
+      .timestamp({ mode: "date", withTimezone: true })
+      .$defaultFn(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    finishedAt: d.timestamp({ mode: "date", withTimezone: true }),
+    createdAt: d
+      .timestamp({ mode: "date", withTimezone: true })
+      .$defaultFn(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    updatedAt: d.timestamp({ mode: "date", withTimezone: true }).$onUpdate(() => new Date()),
+  }),
+  (t) => [
+    index("coffee_bag_coffee_id_idx").on(t.coffeeId),
+    index("coffee_bag_opened_at_idx").on(t.openedAt),
+    index("coffee_bag_finished_at_idx").on(t.finishedAt),
+  ],
+);
+
 export const brewLedgerEntries = createTable(
   "brew_ledger_entry",
   (d) => ({
@@ -199,6 +226,7 @@ export const brewLedgerEntries = createTable(
     waterRecipe: d.varchar({ length: 256 }),
     tastingNotes: d.text(),
     notes: d.text(),
+    telemetryTrace: d.jsonb().$type<LedgerTelemetryTrace | null>(),
     createdAt: d
       .timestamp({ mode: "date", withTimezone: true })
       .$defaultFn(() => /* @__PURE__ */ new Date())
@@ -214,6 +242,7 @@ export const brewLedgerEntries = createTable(
 
 export const coffeesRelations = relations(coffees, ({ many }) => ({
   recipes: many(coffeeRecipes),
+  bags: many(coffeeBags),
   ledgerEntries: many(brewLedgerEntries),
 }));
 
@@ -223,6 +252,13 @@ export const coffeeRecipesRelations = relations(coffeeRecipes, ({ one, many }) =
     references: [coffees.id],
   }),
   ledgerEntries: many(brewLedgerEntries),
+}));
+
+export const coffeeBagsRelations = relations(coffeeBags, ({ one }) => ({
+  coffee: one(coffees, {
+    fields: [coffeeBags.coffeeId],
+    references: [coffees.id],
+  }),
 }));
 
 export const brewLedgerEntriesRelations = relations(brewLedgerEntries, ({ one }) => ({

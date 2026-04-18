@@ -1,12 +1,15 @@
 "use client";
 
 import { useRef } from "react";
+import Link from "next/link";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { SafeLucide } from "~/components/SafeLucide";
 
 import { CoffeeCreateCard } from "~/components/CoffeeCreateCard";
 import { CoffeeImage } from "~/components/CoffeeImage";
+import { CoffeeSummaryCard } from "~/components/CoffeeSummaryCard";
+import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
-import { formatDateOnly } from "~/lib/coffeeUtils";
 import type { CoffeeSummary } from "~/types/coffee";
 
 interface CoffeeSelectorProps {
@@ -44,7 +47,12 @@ export function CoffeeSelector({
               Pick a bean to open its recipe book, ledger, and profile pairing.
             </p>
           </div>
-          <CoffeeCreateCard onCreated={onCreated} triggerLabel="Add coffee" />
+          <div className="flex items-center gap-2">
+            <Button asChild variant="outline">
+              <Link href="/coffees">View all coffees</Link>
+            </Button>
+            <CoffeeCreateCard onCreated={onCreated} triggerLabel="Add coffee" />
+          </div>
         </div>
 
         <button
@@ -52,7 +60,7 @@ export function CoffeeSelector({
           className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full border bg-background/90 p-2 backdrop-blur-sm"
           disabled
         >
-          <ChevronLeft className="h-4 w-4" />
+          <SafeLucide icon={ChevronLeft} className="h-4 w-4" />
         </button>
 
         <div className="flex gap-5 overflow-x-auto px-12 py-6 [&::-webkit-scrollbar]:hidden">
@@ -90,7 +98,7 @@ export function CoffeeSelector({
           className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-full border bg-background/90 p-2 backdrop-blur-sm"
           disabled
         >
-          <ChevronRight className="h-4 w-4" />
+          <SafeLucide icon={ChevronRight} className="h-4 w-4" />
         </button>
       </div>
     );
@@ -125,7 +133,12 @@ export function CoffeeSelector({
             Pick a bean to open its recipe book, ledger, and profile pairing.
           </p>
         </div>
-        <CoffeeCreateCard onCreated={onCreated} triggerLabel="Add coffee" />
+        <div className="flex items-center gap-2">
+          <Button asChild variant="outline">
+            <Link href="/coffees">View all coffees</Link>
+          </Button>
+          <CoffeeCreateCard onCreated={onCreated} triggerLabel="Add coffee" />
+        </div>
       </div>
 
       <button
@@ -133,7 +146,7 @@ export function CoffeeSelector({
         className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full border bg-background/90 p-2 backdrop-blur-sm"
         onClick={() => scroll("left")}
       >
-        <ChevronLeft className="h-4 w-4" />
+        <SafeLucide icon={ChevronLeft} className="h-4 w-4" />
       </button>
 
       <div
@@ -142,64 +155,12 @@ export function CoffeeSelector({
         style={{ scrollbarWidth: "none" }}
       >
         {coffees.map((coffee) => (
-          <button
+          <CoffeeSummaryCard
             key={coffee.id}
-            type="button"
-            className="w-[320px] shrink-0 rounded-xl border p-4 text-left transition hover:-translate-y-1 hover:border-primary/60 hover:shadow-md"
-            onClick={() => onSelectCoffee(coffee.id)}
-          >
-            <div className="mb-4 overflow-hidden rounded-lg border">
-              <CoffeeImage
-                src={coffee.imageUrl}
-                alt={coffee.name}
-                className="aspect-[4/3] w-full object-cover"
-              />
-            </div>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-lg font-semibold">{coffee.name}</div>
-                <div className="text-sm text-muted-foreground">
-                  {coffee.roaster ?? "Unknown roaster"}
-                </div>
-              </div>
-              <span className="rounded-full bg-muted px-2 py-1 text-xs">
-                {coffee.defaultBrewMethod ?? "mixed"}
-              </span>
-            </div>
-
-            <div className="mt-4 space-y-2 text-sm text-muted-foreground">
-              <div className="flex justify-between gap-3">
-                <span>Origin</span>
-                <span className="text-right text-foreground">
-                  {coffee.origin ?? "—"}
-                </span>
-              </div>
-              <div className="flex justify-between gap-3">
-                <span>Process</span>
-                <span className="text-right text-foreground">
-                  {coffee.process ?? "—"}
-                </span>
-              </div>
-              <div className="flex justify-between gap-3">
-                <span>Recipes</span>
-                <span className="text-right text-foreground">
-                  {coffee.recipeCount}
-                </span>
-              </div>
-              <div className="flex justify-between gap-3">
-                <span>Brewed</span>
-                <span className="text-right text-foreground">
-                  {coffee.ledgerCount}
-                </span>
-              </div>
-              <div className="flex justify-between gap-3 border-t pt-2">
-                <span>Last brew</span>
-                <span className="text-right text-foreground">
-                  {formatDateOnly(coffee.lastBrewedAt)}
-                </span>
-              </div>
-            </div>
-          </button>
+            coffee={coffee}
+            onClick={onSelectCoffee}
+            dimWhenFinished
+          />
         ))}
       </div>
 
@@ -208,7 +169,7 @@ export function CoffeeSelector({
         className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-full border bg-background/90 p-2 backdrop-blur-sm"
         onClick={() => scroll("right")}
       >
-        <ChevronRight className="h-4 w-4" />
+        <SafeLucide icon={ChevronRight} className="h-4 w-4" />
       </button>
     </div>
   );

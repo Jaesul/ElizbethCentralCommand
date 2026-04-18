@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
-  getCoffeeDetailById,
+  getCoffeePageDetailById,
   updateCoffee,
 } from "~/server/db/coffeeQueries";
 import { coffeeUpdateSchema } from "~/types/coffee";
@@ -21,7 +21,7 @@ export async function GET(
     return NextResponse.json({ error: "Invalid coffee id" }, { status: 400 });
   }
 
-  const coffee = await getCoffeeDetailById(coffeeId);
+  const coffee = await getCoffeePageDetailById(coffeeId);
   if (!coffee) {
     return NextResponse.json({ error: "Coffee not found" }, { status: 404 });
   }

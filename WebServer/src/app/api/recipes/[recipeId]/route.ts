@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  deleteRecipe,
   getRecipeById,
   updateRecipe,
 } from "~/server/db/coffeeQueries";
@@ -54,4 +55,22 @@ export async function PATCH(
   }
 
   return NextResponse.json(recipe);
+}
+
+export async function DELETE(
+  _request: Request,
+  { params }: { params: Promise<{ recipeId: string }> },
+) {
+  const { recipeId: recipeIdParam } = await params;
+  const recipeId = parseRecipeId(recipeIdParam);
+  if (recipeId == null) {
+    return NextResponse.json({ error: "Invalid recipe id" }, { status: 400 });
+  }
+
+  const ok = await deleteRecipe(recipeId);
+  if (!ok) {
+    return NextResponse.json({ error: "Recipe not found" }, { status: 404 });
+  }
+
+  return new NextResponse(null, { status: 204 });
 }
