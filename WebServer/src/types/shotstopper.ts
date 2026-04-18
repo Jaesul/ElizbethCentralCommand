@@ -14,5 +14,7 @@ export interface ShotStopperData {
   pressurePSI?: number;
   pressureBar?: number;
   pumpPowerPct?: number;
+  /** g/s style flow estimate when simulating */
+  flowRate?: number;
 }
 

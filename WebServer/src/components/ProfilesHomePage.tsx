@@ -1,27 +1,45 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Plus } from "lucide-react";
-import { SafeLucide } from "~/components/SafeLucide";
+import { AllCoffeesPage } from "~/components/AllCoffeesPage";
 import { BeanPounderLogo } from "~/components/BeanPounderLogo";
-import { CoffeeSelector } from "~/components/CoffeeSelector";
-import { Card, CardContent } from "~/components/ui/card";
-import { Skeleton } from "~/components/ui/skeleton";
+import { CoffeeCreateCard } from "~/components/CoffeeCreateCard";
+import { DashboardProfilesPanel } from "~/components/dashboard/DashboardProfilesPanel";
+import { DashboardShell } from "~/components/dashboard/DashboardShell";
+import {
+  isDashboardSection,
+  type DashboardSection,
+} from "~/components/dashboard/types";
+import {
+  ProfileBrewPage,
+  type EmbeddedBrewHeaderActions,
+} from "~/components/ProfileBrewPage";
 import { Button } from "~/components/ui/button";
+import { SafeLucide } from "~/components/SafeLucide";
+import { Skeleton } from "~/components/ui/skeleton";
 import { useFlowConnection } from "~/components/FlowConnectionProvider";
-import { ProfileSelector } from "~/components/ProfileSelector";
 import { buildBrewHref } from "~/lib/coffeeUtils";
 import { getDeviceProfilesAsPhaseProfiles } from "~/lib/deviceProfiles";
-import type { CoffeeSummary } from "~/types/coffee";
 import type { PhaseProfile } from "~/types/profiles";
 
-const ignoreProfileDelete = (_profileId: string) => undefined;
+function BrewPanelFallback() {
+  return (
+    <div className="space-y-4 p-4">
+      <Skeleton className="h-10 w-full max-w-md" />
+      <Skeleton className="h-[320px] w-full rounded-xl" />
+    </div>
+  );
+}
 
 export function ProfilesHomePage() {
   const router = useRouter();
-  const [coffees, setCoffees] = useState<CoffeeSummary[]>([]);
-  const [isCoffeeLoading, setIsCoffeeLoading] = useState(true);
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [brewHeaderActions, setBrewHeaderActions] = useState<EmbeddedBrewHeaderActions | null>(null);
+  const sectionParam = searchParams.get("tab");
+  const section: DashboardSection = isDashboardSection(sectionParam) ? sectionParam : "brew";
 
   const {
     isConnected: flowConnected,
@@ -29,41 +47,6 @@ export function ProfilesHomePage() {
     sendRaw: flowSendRaw,
     sendCommand: flowSendCommand,
   } = useFlowConnection();
-
-  const loadCoffees = useCallback(async () => {
-    setIsCoffeeLoading(true);
-    try {
-      const response = await fetch("/api/coffees?status=all", {
-        cache: "no-store",
-      });
-      if (!response.ok) {
-        throw new Error("Coffee load failed");
-      }
-
-      const data = (await response.json()) as CoffeeSummary[];
-      setCoffees(data.slice(0, 5));
-    } catch (error) {
-      console.error(error);
-      setCoffees([]);
-    } finally {
-      setIsCoffeeLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadCoffees();
-  }, [loadCoffees]);
-
-  useEffect(() => {
-    const handleCoffeeSaved = () => {
-      void loadCoffees();
-    };
-
-    window.addEventListener("coffee-saved", handleCoffeeSaved);
-    return () => {
-      window.removeEventListener("coffee-saved", handleCoffeeSaved);
-    };
-  }, [loadCoffees]);
 
   const deviceProfilesAsPhaseProfiles: PhaseProfile[] = useMemo(() => {
     return getDeviceProfilesAsPhaseProfiles(flowDeviceProfiles);
@@ -80,7 +63,7 @@ export function ProfilesHomePage() {
     (_profileId: string) => {
       flowSendCommand("GO");
     },
-    [flowSendCommand]
+    [flowSendCommand],
   );
 
   const handleEditDeviceProfile = useCallback(
@@ -88,121 +71,106 @@ export function ProfilesHomePage() {
       sessionStorage.setItem("elizbeth-profile-edit-initial", JSON.stringify(profile));
       router.push("/profiles/new");
     },
-    [router]
+    [router],
   );
 
-  return (
-    <div className="container mx-auto max-w-5xl px-4 py-8 xl:max-w-6xl">
-      <div className="mb-6 space-y-4">
-        <div className="rounded-xl border bg-card">
-          <div className="flex flex-col items-center justify-center gap-8 px-4 py-20 text-center sm:gap-10 sm:py-28">
-            <div className="space-y-2">
-              <h2 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-                Let&apos;s pound a bean or two{" "}
-                <BeanPounderLogo
-                  className="ml-0.5 inline-block aspect-[54/24] h-[1.15em] w-auto align-text-bottom text-primary"
-                  aria-hidden
-                />
-              </h2>
-              <p className="mx-auto max-w-md text-sm text-muted-foreground">
-                Add beans, dial recipes, and log shots—then jump in when you are ready to pull.
-              </p>
-            </div>
-            <Button
-              size="lg"
-              className="inline-flex h-auto cursor-pointer items-center gap-3 px-6 py-3 text-2xl font-bold tracking-tight"
-              onClick={() => router.push(buildBrewHref(null))}
-              aria-label="Open brew page"
-            >
-              <BeanPounderLogo
-                className="aspect-[54/24] h-8 w-auto text-primary-foreground"
-                aria-hidden
-              />
-              <span className="text-primary-foreground">Bean Pounder</span>
-            </Button>
-          </div>
-        </div>
+  const handleSectionChange = useCallback(
+    (nextSection: DashboardSection) => {
+      if (nextSection === section) return;
 
-        <CoffeeSelector
-          coffees={coffees}
-          isLoading={isCoffeeLoading}
-          onSelectCoffee={(coffeeId) => router.push(`/coffees/${coffeeId}`)}
-          onCreated={() => void loadCoffees()}
-        />
-      </div>
+      const nextParams = new URLSearchParams(searchParams.toString());
+      if (nextSection === "brew") {
+        nextParams.delete("tab");
+      } else {
+        nextParams.set("tab", nextSection);
+      }
 
-      {/* Device profiles carousel (ESP saved profiles) */}
-      <div className="rounded-xl border bg-card">
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <div>
-            <h2 className="text-lg font-semibold">Profiles</h2>
-            <p className="text-sm text-muted-foreground">
-              Pick a machine profile to brew immediately or pair with a coffee.
-            </p>
-          </div>
-          <Button onClick={() => router.push("/profiles/new")} size="sm" variant="outline">
-            <SafeLucide icon={Plus} className="mr-2 h-4 w-4" />
-            New Profile
-          </Button>
-        </div>
-        <div className="p-4">
-          {!flowConnected ? (
-            <div className="flex gap-6 overflow-x-auto px-1 py-2 [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: "none" }}>
-              {[1, 2, 3].map((i) => (
-                <Card key={i} className="h-full w-[320px] shrink-0 border rounded-xl">
-                  <CardContent className="p-4 pt-4">
-                    <div className="space-y-4">
-                      <Skeleton className="h-6 w-32" />
-                      <Skeleton className="h-[180px] w-full rounded-md" />
-                      <div className="space-y-2 border-t pt-3">
-                        <Skeleton className="h-4 w-full max-w-[80%]" />
-                        <Skeleton className="h-4 w-full max-w-[60%]" />
-                        <Skeleton className="h-4 w-full max-w-[70%]" />
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          ) : !flowDeviceProfiles ? (
-            <Card className="rounded-xl">
-              <CardContent className="flex flex-col items-center justify-center py-12">
-                <p className="text-sm text-muted-foreground">
-                  Click &quot;Send PROFILES&quot; to load profiles from the device.
-                </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-3"
-                  onClick={() => flowSendRaw("PROFILES")}
-                >
-                  Send PROFILES
-                </Button>
-              </CardContent>
-            </Card>
-          ) : deviceProfilesAsPhaseProfiles.length === 0 ? (
-            <Card className="rounded-xl">
-              <CardContent className="flex flex-col items-center justify-center py-12">
-                <p className="text-sm text-muted-foreground">
-                  No profiles saved on device.
-                </p>
-              </CardContent>
-            </Card>
+      const nextQuery = nextParams.toString();
+      router.push(nextQuery ? `${pathname}?${nextQuery}` : pathname);
+    },
+    [pathname, router, searchParams, section],
+  );
+
+  const headerMeta: Record<
+    DashboardSection,
+    { title: string; description: string }
+  > = {
+    brew: {
+      title: "Brew",
+      description: "Dial a profile, pick a bean, and pull with live telemetry.",
+    },
+    beans: {
+      title: "Beans",
+      description: "Browse and filter your coffee library.",
+    },
+    profiles: {
+      title: "Profiles",
+      description: "Shot profiles saved on the ESP.",
+    },
+  };
+
+  const meta = headerMeta[section];
+
+  const headerActions =
+    section === "brew" && brewHeaderActions ? (
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <Button size="sm" onClick={brewHeaderActions.onStart} disabled={brewHeaderActions.startDisabled}>
+          {brewHeaderActions.startLabel === "Start Bean Pound" ? (
+            <>
+              <BeanPounderLogo className="aspect-[54/24] h-4 w-auto" aria-hidden />
+              Start Bean Pound
+            </>
           ) : (
-            <ProfileSelector
-              profiles={deviceProfilesAsPhaseProfiles}
-              onSelectProfile={handleDeviceSelectProfile}
-              onDeleteProfile={ignoreProfileDelete}
-              onStartShot={handleDeviceStartShot}
-              onEditProfile={handleEditDeviceProfile}
-              isConnected={flowConnected}
-              isBrewing={false}
-              readOnly
-              embedded
-            />
+            brewHeaderActions.startLabel
           )}
-        </div>
+        </Button>
+        <Button
+          size="sm"
+          variant="destructive"
+          onClick={brewHeaderActions.onStop}
+          disabled={brewHeaderActions.stopDisabled}
+        >
+          {brewHeaderActions.stopLabel}
+        </Button>
       </div>
-    </div>
+    ) : section === "beans" ? (
+      <CoffeeCreateCard triggerLabel="Add coffee" />
+    ) : section === "profiles" ? (
+      <Button size="sm" variant="outline" onClick={() => router.push("/profiles/new")}>
+        <SafeLucide icon={Plus} className="mr-2 h-4 w-4" />
+        New profile
+      </Button>
+    ) : null;
+
+  return (
+    <DashboardShell
+      active={section}
+      onSectionChange={handleSectionChange}
+      headerTitle={meta.title}
+      headerDescription={meta.description}
+      headerActions={headerActions}
+    >
+      {section === "brew" ? (
+        <Suspense fallback={<BrewPanelFallback />}>
+          <ProfileBrewPage embedded onEmbeddedHeaderActionsChange={setBrewHeaderActions} />
+        </Suspense>
+      ) : null}
+      <div className={section === "beans" ? "min-h-0 flex-1" : "hidden"} aria-hidden={section !== "beans"}>
+        <AllCoffeesPage embedded />
+      </div>
+      {section === "profiles" ? (
+        <div className="p-4 lg:p-6">
+          <DashboardProfilesPanel
+            flowConnected={flowConnected}
+            flowDeviceProfiles={flowDeviceProfiles}
+            onSendProfiles={() => flowSendRaw("PROFILES")}
+            profiles={deviceProfilesAsPhaseProfiles}
+            onSelectProfile={handleDeviceSelectProfile}
+            onEditProfile={handleEditDeviceProfile}
+            onNewProfile={() => router.push("/profiles/new")}
+          />
+        </div>
+      ) : null}
+    </DashboardShell>
   );
 }

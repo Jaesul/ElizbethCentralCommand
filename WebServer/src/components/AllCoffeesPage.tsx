@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { SlidersHorizontal } from "lucide-react";
 
@@ -22,6 +22,7 @@ import {
   DrawerTrigger,
 } from "~/components/ui/drawer";
 import { Skeleton } from "~/components/ui/skeleton";
+import { cn } from "~/lib/utils";
 import type { CoffeeRotationFilter, CoffeeSummary } from "~/types/coffee";
 
 type CoffeeBrowseFilters = {
@@ -121,19 +122,36 @@ function hasExtraFilters(filters: CoffeeBrowseFilters) {
   );
 }
 
-export function AllCoffeesPage() {
+interface AllCoffeesPageProps {
+  /** When true, used inside dashboard inset: scrollable column, no page hero. */
+  embedded?: boolean;
+}
+
+const COFFEE_LIST_TIMEOUT_MS = 60_000;
+
+export function AllCoffeesPage({ embedded = false }: AllCoffeesPageProps) {
   const router = useRouter();
   const [coffees, setCoffees] = useState<CoffeeSummary[]>([]);
   const [filters, setFilters] = useState<CoffeeBrowseFilters>(initialFilters);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadRequestIdRef = useRef(0);
 
   const loadCoffees = useCallback(async () => {
+    const requestId = ++loadRequestIdRef.current;
     setIsLoading(true);
+    setLoadError(null);
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), COFFEE_LIST_TIMEOUT_MS);
 
     try {
       const response = await fetch(`/api/coffees?${buildCoffeeBrowseQuery(filters)}`, {
         cache: "no-store",
+        signal: controller.signal,
       });
+      if (requestId !== loadRequestIdRef.current) return;
+
       if (!response.ok) {
         throw new Error("Coffee browse fetch failed");
       }
@@ -141,10 +159,22 @@ export function AllCoffeesPage() {
       const data = (await response.json()) as CoffeeSummary[];
       setCoffees(data);
     } catch (error) {
+      if (requestId !== loadRequestIdRef.current) return;
+
       console.error(error);
       setCoffees([]);
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setLoadError(
+          "Loading coffees timed out (the server query was taking too long). Try again after a moment.",
+        );
+      } else {
+        setLoadError("Could not load coffees. Check the network or server logs, then retry.");
+      }
     } finally {
-      setIsLoading(false);
+      window.clearTimeout(timeoutId);
+      if (requestId === loadRequestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [filters]);
 
@@ -184,49 +214,40 @@ export function AllCoffeesPage() {
     }));
   };
 
+  const outerClass = embedded
+    ? "flex min-h-0 w-full flex-1 flex-col overflow-auto px-4 py-4"
+    : "container mx-auto max-w-6xl px-4 py-8";
+
   return (
-    <div className="container mx-auto max-w-6xl px-4 py-8">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">All coffees</h1>
-          <p className="text-sm text-muted-foreground">
-            Browse beans in rotation, retired bags, and your full coffee history.
-          </p>
-        </div>
-        <CoffeeCreateCard onCreated={() => void loadCoffees()} triggerLabel="Add coffee" />
-      </div>
-
-      <div className="rounded-xl border bg-card p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
-          <div className="flex flex-wrap items-center gap-2">
-          {(["all", "active", "finished"] as const).map((status) => (
-            <Button
-              key={status}
-              type="button"
-              variant={filters.status === status ? "default" : "outline"}
-              onClick={() => setFilter("status", status)}
-              className="capitalize"
-            >
-              {status === "all" ? (
-                "All"
-              ) : (
-                <>
-                  <CoffeeRotationStatusIcon status={status} />
-                  {getCoffeeRotationStatusLabel(status)}
-                </>
-              )}
-            </Button>
-          ))}
+    <div className={outerClass}>
+      {!embedded ? (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold">All coffees</h1>
+            <p className="text-sm text-muted-foreground">
+              Browse beans in rotation, retired bags, and your full coffee history.
+            </p>
           </div>
+          <CoffeeCreateCard onCreated={() => void loadCoffees()} triggerLabel="Add coffee" />
+        </div>
+      ) : null}
 
-          <Drawer direction="right">
-            <DrawerTrigger asChild>
-              <Button type="button" variant="outline">
-                <SlidersHorizontal className="h-4 w-4" />
-                Filters
-                {hasExtraFilters(filters) ? " active" : ""}
-              </Button>
-            </DrawerTrigger>
+      <div
+        className={cn(
+          "flex flex-col rounded-xl border bg-card p-4",
+          embedded && "min-h-0 flex-1",
+        )}
+      >
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 pb-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Drawer direction="right">
+              <DrawerTrigger asChild>
+                <Button type="button" variant="outline">
+                  <SlidersHorizontal className="h-4 w-4" />
+                  Filters
+                  {hasExtraFilters(filters) ? " active" : ""}
+                </Button>
+              </DrawerTrigger>
             <DrawerContent>
               <DrawerHeader>
                 <DrawerTitle>Filters</DrawerTitle>
@@ -330,29 +351,59 @@ export function AllCoffeesPage() {
               </DrawerFooter>
             </DrawerContent>
           </Drawer>
-        </div>
-      </div>
-
-      <div className="mt-6">
-        {isLoading ? (
-          <CoffeeBrowseSkeleton />
-        ) : coffees.length === 0 ? (
-          <div className="rounded-xl border bg-card p-8 text-center text-sm text-muted-foreground">
-            No coffees match the current filters.
-          </div>
-        ) : (
-          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-            {coffees.map((coffee) => (
-              <CoffeeSummaryCard
-                key={coffee.id}
-                coffee={coffee}
-                onClick={(coffeeId) => router.push(`/coffees/${coffeeId}`)}
-                className="w-full"
-                dimWhenFinished
-              />
+            {(["all", "active", "finished"] as const).map((status) => (
+              <Button
+                key={status}
+                type="button"
+                variant={filters.status === status ? "default" : "outline"}
+                onClick={() => setFilter("status", status)}
+                className="capitalize"
+              >
+                {status === "all" ? (
+                  "All"
+                ) : (
+                  <>
+                    <CoffeeRotationStatusIcon status={status} />
+                    {getCoffeeRotationStatusLabel(status)}
+                  </>
+                )}
+              </Button>
             ))}
           </div>
-        )}
+        </div>
+
+        <div
+          className={cn(
+            embedded ? "mt-2 flex min-h-0 flex-1 flex-col overflow-auto" : "mt-4",
+          )}
+        >
+          {isLoading ? (
+            <CoffeeBrowseSkeleton />
+          ) : loadError ? (
+            <div className="rounded-lg border border-destructive/40 bg-muted/20 p-8 text-center text-sm">
+              <p className="text-destructive">{loadError}</p>
+              <Button type="button" className="mt-4" onClick={() => void loadCoffees()}>
+                Retry
+              </Button>
+            </div>
+          ) : coffees.length === 0 ? (
+            <div className="rounded-lg border border-border bg-muted/10 p-8 text-center text-sm text-muted-foreground">
+              No coffees match the current filters.
+            </div>
+          ) : (
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+              {coffees.map((coffee) => (
+                <CoffeeSummaryCard
+                  key={coffee.id}
+                  coffee={coffee}
+                  onClick={(coffeeId) => router.push(`/coffees/${coffeeId}`)}
+                  className="w-full"
+                  dimWhenFinished
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

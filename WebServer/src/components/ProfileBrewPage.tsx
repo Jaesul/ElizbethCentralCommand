@@ -85,11 +85,30 @@ function MetricRow({
   );
 }
 
-export function ProfileBrewPage() {
+interface ProfileBrewPageProps {
+  /** When true, render inside dashboard main inset (no full-viewport min height). */
+  embedded?: boolean;
+  onEmbeddedHeaderActionsChange?: (actions: EmbeddedBrewHeaderActions | null) => void;
+}
+
+export interface EmbeddedBrewHeaderActions {
+  startDisabled: boolean;
+  startLabel: string;
+  stopDisabled: boolean;
+  stopLabel: string;
+  onStart: () => void;
+  onStop: () => void;
+}
+
+export function ProfileBrewPage({
+  embedded = false,
+  onEmbeddedHeaderActionsChange,
+}: ProfileBrewPageProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
-  const brewProfileId = searchParams.get("profileId")?.trim() || null;
+  const profileIdRaw = searchParams.get("profileId")?.trim();
+  const brewProfileId = profileIdRaw && profileIdRaw.length > 0 ? profileIdRaw : null;
   const initialCoffeeIdParam = searchParams.get("coffeeId");
   const initialCoffeeId = initialCoffeeIdParam
     ? Number.parseInt(initialCoffeeIdParam, 10)
@@ -381,6 +400,11 @@ export function ProfileBrewPage() {
     flowSendCommand("STOP");
     setBrewState("stopping");
   }, [flowSendCommand]);
+
+  const handleStart = useCallback(() => {
+    setBrewState("starting");
+    handleBrew();
+  }, [handleBrew]);
 
   useEffect(() => {
     if (connectionState !== "connected") {
@@ -910,48 +934,78 @@ export function ProfileBrewPage() {
     }
   }, [showTelemetryFirst]);
 
+  const rootClass = embedded
+    ? "flex min-h-0 w-full flex-1 flex-col overflow-auto px-4 py-4"
+    : "container mx-auto max-w-5xl min-h-screen px-4 py-8 xl:max-w-6xl";
+
+  const brewActionButtons = (
+    <div className="flex shrink-0 flex-wrap items-center gap-2">
+      <Button
+        onClick={handleStart}
+        disabled={!isConnectionFresh || isBrewing || !profile}
+        className="cursor-pointer"
+        size={embedded ? "sm" : "default"}
+      >
+        {brewState === "starting" ? (
+          "Starting..."
+        ) : brewState === "brewing" ? (
+          "Brewing"
+        ) : brewState === "stopping" ? (
+          "Stopping..."
+        ) : (
+          <>
+            <BeanPounderLogo className="aspect-[54/24] h-4 w-auto" aria-hidden />
+            Start Bean Pound
+          </>
+        )}
+      </Button>
+      <Button
+        variant="destructive"
+        onClick={handleStop}
+        disabled={!isConnectionFresh || brewState !== "starting" && brewState !== "brewing"}
+        className="cursor-pointer"
+        size={embedded ? "sm" : "default"}
+      >
+        {brewState === "stopping" ? "Stopping..." : "Stop"}
+      </Button>
+    </div>
+  );
+
+  const embeddedHeaderActions = useMemo<EmbeddedBrewHeaderActions | null>(() => {
+    if (!embedded) return null;
+
+    return {
+      startDisabled: !isConnectionFresh || isBrewing || !profile,
+      startLabel:
+        brewState === "starting"
+          ? "Starting..."
+          : brewState === "brewing"
+            ? "Brewing"
+            : brewState === "stopping"
+              ? "Stopping..."
+              : "Start Bean Pound",
+      stopDisabled: !isConnectionFresh || (brewState !== "starting" && brewState !== "brewing"),
+      stopLabel: brewState === "stopping" ? "Stopping..." : "Stop",
+      onStart: handleStart,
+      onStop: handleStop,
+    };
+  }, [brewState, embedded, handleStart, handleStop, isBrewing, isConnectionFresh, profile]);
+
+  useEffect(() => {
+    onEmbeddedHeaderActionsChange?.(embeddedHeaderActions);
+  }, [embeddedHeaderActions, onEmbeddedHeaderActionsChange]);
+
   return (
-    <div className="container mx-auto max-w-5xl px-4 py-8 min-h-screen xl:max-w-6xl">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-        <Button variant="ghost" onClick={handleBack} className="cursor-pointer">
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back
-        </Button>
-        <div className="flex gap-2">
-          <Button
-            onClick={() => {
-              setBrewState("starting");
-              handleBrew();
-            }}
-            disabled={!isConnectionFresh || isBrewing || !profile}
-            className="cursor-pointer"
-          >
-            {brewState === "starting" ? (
-              "Starting..."
-            ) : brewState === "brewing" ? (
-              "Brewing"
-            ) : brewState === "stopping" ? (
-              "Stopping..."
-            ) : (
-              <>
-                <BeanPounderLogo
-                  className="aspect-[54/24] h-4 w-auto"
-                  aria-hidden
-                />
-                Start Bean Pound
-              </>
-            )}
+    <div className={rootClass}>
+      {!embedded ? (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+          <Button variant="ghost" onClick={handleBack} className="cursor-pointer">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back
           </Button>
-          <Button
-            variant="destructive"
-            onClick={handleStop}
-            disabled={!isConnectionFresh || brewState !== "starting" && brewState !== "brewing"}
-            className="cursor-pointer"
-          >
-            {brewState === "stopping" ? "Stopping..." : "Stop"}
-          </Button>
+          {brewActionButtons}
         </div>
-      </div>
+      ) : null}
 
       {isPreparingLedgerDialog && (
         <div className="mb-6 flex items-center gap-3 rounded-xl border bg-background/80 p-4 backdrop-blur-sm">

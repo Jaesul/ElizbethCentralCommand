@@ -2,8 +2,8 @@ import "~/styles/globals.css";
 
 import { type Metadata } from "next";
 import { Geist } from "next/font/google";
-import { AppNav } from "~/components/AppNav";
 import { FlowConnectionProvider } from "~/components/FlowConnectionProvider";
+import { RootChrome } from "~/components/RootChrome";
 import { ToastProvider } from "~/components/ui/use-toast";
 import { Toaster } from "~/components/ui/toaster";
 
@@ -38,8 +38,7 @@ export default function RootLayout({
       <body suppressHydrationWarning>
         <ToastProvider>
           <FlowConnectionProvider>
-            <AppNav />
-            {children}
+            <RootChrome>{children}</RootChrome>
           </FlowConnectionProvider>
           <Toaster />
         </ToastProvider>

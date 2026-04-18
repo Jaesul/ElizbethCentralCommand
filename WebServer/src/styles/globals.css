@@ -148,9 +148,9 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply m-0 bg-background text-foreground;
   }
-  
+
   /* Hide spinner arrows on number inputs */
   input[type="number"]::-webkit-inner-spin-button,
   input[type="number"]::-webkit-outer-spin-button {

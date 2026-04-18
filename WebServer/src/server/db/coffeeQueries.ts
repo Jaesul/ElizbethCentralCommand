@@ -48,14 +48,51 @@ type CoffeeBagInsert = typeof coffeeBags.$inferInsert;
 type BrewLedgerEntryRow = typeof brewLedgerEntries.$inferSelect;
 type BrewLedgerInsert = typeof brewLedgerEntries.$inferInsert;
 
-function toIsoString(value: Date | string | null | undefined) {
+/** ISO string or null; never throws (invalid / out-of-range dates from DB). */
+function toIsoString(value: Date | string | number | bigint | null | undefined) {
   if (value == null) return null;
-  if (typeof value === "string") {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
-  }
 
-  return value.toISOString();
+  const format = (d: Date): string | null => {
+    if (Number.isNaN(d.getTime())) return null;
+    try {
+      return d.toISOString();
+    } catch {
+      return null;
+    }
+  };
+
+  if (value instanceof Date) {
+    return format(value);
+  }
+  if (typeof value === "string") {
+    return format(new Date(value));
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return format(new Date(value));
+  }
+  if (typeof value === "bigint") {
+    return format(new Date(Number(value)));
+  }
+  return null;
+}
+
+/** Required API timestamps: DB should always be valid; fallback avoids 500 on bad rows. */
+function toIsoStringRequired(
+  value: Date | string | number | bigint | null | undefined,
+  fallback = "1970-01-01T00:00:00.000Z",
+) {
+  return toIsoString(value) ?? fallback;
+}
+
+/** PG `count()` can be bigint; JSON.stringify throws on bigint. */
+function coerceCount(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "string" && value.trim() !== "") {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
 }
 
 function serializeRecipe(row: CoffeeRecipeRow): CoffeeRecipe {
@@ -75,7 +112,7 @@ function serializeRecipe(row: CoffeeRecipeRow): CoffeeRecipe {
     profileNameSnapshot: row.profileNameSnapshot,
     tastingNotes: row.tastingNotes,
     notes: row.notes,
-    createdAt: row.createdAt.toISOString(),
+    createdAt: toIsoStringRequired(row.createdAt),
     updatedAt: toIsoString(row.updatedAt),
   };
 }
@@ -85,7 +122,7 @@ function serializeLedgerEntry(row: BrewLedgerEntryRow): BrewLedgerEntry {
     id: row.id,
     coffeeId: row.coffeeId,
     recipeId: row.recipeId,
-    brewedAt: row.brewedAt.toISOString(),
+    brewedAt: toIsoStringRequired(row.brewedAt),
     brewMethod: row.brewMethod as BrewLedgerEntry["brewMethod"],
     doseGrams: row.doseGrams,
     yieldGrams: row.yieldGrams,
@@ -102,7 +139,7 @@ function serializeLedgerEntry(row: BrewLedgerEntryRow): BrewLedgerEntry {
     tastingNotes: row.tastingNotes,
     notes: row.notes,
     telemetryTrace: row.telemetryTrace,
-    createdAt: row.createdAt.toISOString(),
+    createdAt: toIsoStringRequired(row.createdAt),
     updatedAt: toIsoString(row.updatedAt),
   };
 }
@@ -111,9 +148,9 @@ function serializeCoffeeBag(row: CoffeeBagRow): CoffeeBag {
   return {
     id: row.id,
     coffeeId: row.coffeeId,
-    openedAt: row.openedAt.toISOString(),
+    openedAt: toIsoStringRequired(row.openedAt),
     finishedAt: toIsoString(row.finishedAt),
-    createdAt: row.createdAt.toISOString(),
+    createdAt: toIsoStringRequired(row.createdAt),
     updatedAt: toIsoString(row.updatedAt),
   };
 }
@@ -130,14 +167,41 @@ function getCoffeeBagState(rows: CoffeeBagRow[]) {
   };
 }
 
+/** Same semantics as {@link getCoffeeBagState} for rows ordered newest-first, without scanning every bag row. */
+function getCoffeeBagStateFromPeek(input: {
+  bagsConsumed: number;
+  latestBagRow: CoffeeBagRow | null;
+  openBagRow: CoffeeBagRow | null;
+}) {
+  const { bagsConsumed, latestBagRow, openBagRow } = input;
+  return {
+    currentBag: openBagRow ? serializeCoffeeBag(openBagRow) : null,
+    latestBag: latestBagRow ? serializeCoffeeBag(latestBagRow) : null,
+    bagsConsumed,
+    rotationStatus: (openBagRow ? "active" : "finished") as CoffeeRotationStatus,
+  };
+}
+
+type CoffeeSummaryBagsInput =
+  | CoffeeBagRow[]
+  | {
+      bagsConsumed: number;
+      latestBagRow: CoffeeBagRow | null;
+      openBagRow: CoffeeBagRow | null;
+    };
+
+function resolveCoffeeSummaryBags(bags: CoffeeSummaryBagsInput) {
+  return Array.isArray(bags) ? getCoffeeBagState(bags) : getCoffeeBagStateFromPeek(bags);
+}
+
 function serializeCoffeeSummaryFromCounts(
   row: CoffeeRow,
   recipeCount: number,
   ledgerCount: number,
   lastBrewedAt: Date | string | null | undefined,
-  bagRows: CoffeeBagRow[],
+  bags: CoffeeSummaryBagsInput,
 ): CoffeeSummary {
-  const bagState = getCoffeeBagState(bagRows);
+  const bagState = resolveCoffeeSummaryBags(bags);
 
   return {
     id: row.id,
@@ -154,10 +218,10 @@ function serializeCoffeeSummaryFromCounts(
     preferredProfileRef: row.preferredProfileRef,
     preferredProfileName: row.preferredProfileName,
     defaultBrewMethod: row.defaultBrewMethod as CoffeeSummary["defaultBrewMethod"],
-    createdAt: row.createdAt.toISOString(),
+    createdAt: toIsoStringRequired(row.createdAt),
     updatedAt: toIsoString(row.updatedAt),
-    recipeCount,
-    ledgerCount,
+    recipeCount: coerceCount(recipeCount),
+    ledgerCount: coerceCount(ledgerCount),
     lastBrewedAt: toIsoString(lastBrewedAt),
     bagsConsumed: bagState.bagsConsumed,
     rotationStatus: bagState.rotationStatus,
@@ -250,26 +314,86 @@ function compareCoffeeSummaries(left: CoffeeSummary, right: CoffeeSummary) {
   return right.id - left.id;
 }
 
-async function listCoffeeBagRows() {
-  return db
-    .select()
-    .from(coffeeBags)
-    .orderBy(desc(coffeeBags.openedAt), desc(coffeeBags.id));
+function takeExecuteRows(result: unknown): Record<string, unknown>[] {
+  if (Array.isArray(result)) {
+    return result as Record<string, unknown>[];
+  }
+  if (
+    result &&
+    typeof result === "object" &&
+    Array.isArray((result as { rows?: unknown }).rows)
+  ) {
+    return (result as { rows: Record<string, unknown>[] }).rows;
+  }
+  return [];
 }
 
-function groupBagRowsByCoffee(rows: CoffeeBagRow[]) {
-  const rowsByCoffee = new Map<number, CoffeeBagRow[]>();
+function rowToCoffeeBagRow(row: Record<string, unknown>): CoffeeBagRow {
+  const openedAt = row.openedAt;
+  const finishedAt = row.finishedAt;
+  const createdAt = row.createdAt;
+  const updatedAt = row.updatedAt;
 
-  for (const row of rows) {
-    const existing = rowsByCoffee.get(row.coffeeId);
-    if (existing) {
-      existing.push(row);
-    } else {
-      rowsByCoffee.set(row.coffeeId, [row]);
-    }
+  return {
+    id: Number(row.id),
+    coffeeId: Number(row.coffeeId),
+    openedAt:
+      openedAt instanceof Date ? openedAt : new Date(String(openedAt)),
+    finishedAt:
+      finishedAt == null || finishedAt === ""
+        ? null
+        : finishedAt instanceof Date
+          ? finishedAt
+          : new Date(String(finishedAt)),
+    createdAt:
+      createdAt instanceof Date ? createdAt : new Date(String(createdAt)),
+    updatedAt:
+      updatedAt == null || updatedAt === ""
+        ? null
+        : updatedAt instanceof Date
+          ? updatedAt
+          : new Date(String(updatedAt)),
+  };
+}
+
+/** Per-coffee bag stats for browse lists (O(coffees) rows, not O(bags)). */
+async function listCoffeeBagPeekData() {
+  const [countRows, latestResult, openResult] = await Promise.all([
+    db
+      .select({
+        coffeeId: coffeeBags.coffeeId,
+        n: count(),
+      })
+      .from(coffeeBags)
+      .groupBy(coffeeBags.coffeeId),
+    db.execute(sql.raw(`
+      SELECT DISTINCT ON ("coffeeId") *
+      FROM "elizbeth_central_command_coffee_bag"
+      ORDER BY "coffeeId", "openedAt" DESC, "id" DESC
+    `)),
+    db.execute(sql.raw(`
+      SELECT DISTINCT ON ("coffeeId") *
+      FROM "elizbeth_central_command_coffee_bag"
+      WHERE "finishedAt" IS NULL
+      ORDER BY "coffeeId", "openedAt" DESC, "id" DESC
+    `)),
+  ]);
+
+  const counts = new Map<number, number>(
+    countRows.map((r) => [r.coffeeId, coerceCount(r.n)]),
+  );
+  const latestByCoffeeId = new Map<number, CoffeeBagRow>();
+  for (const raw of takeExecuteRows(latestResult)) {
+    const bagRow = rowToCoffeeBagRow(raw);
+    latestByCoffeeId.set(bagRow.coffeeId, bagRow);
+  }
+  const openByCoffeeId = new Map<number, CoffeeBagRow>();
+  for (const raw of takeExecuteRows(openResult)) {
+    const bagRow = rowToCoffeeBagRow(raw);
+    openByCoffeeId.set(bagRow.coffeeId, bagRow);
   }
 
-  return rowsByCoffee;
+  return { counts, latestByCoffeeId, openByCoffeeId };
 }
 
 function toCoffeeCreateInsert(input: CoffeeCreateInput): CoffeeInsert {
@@ -473,49 +597,49 @@ export async function listCoffees(
     maxBagsConsumed: null,
   },
 ) {
-  const [coffeeRows, recipeCountRows, ledgerStatsRows, bagRows] = await Promise.all([
-    db.select().from(coffees).orderBy(desc(coffees.createdAt)),
-    db
-      .select({
-        coffeeId: coffeeRecipes.coffeeId,
-        recipeCount: count(),
-      })
-      .from(coffeeRecipes)
-      .groupBy(coffeeRecipes.coffeeId),
-    db
-      .select({
-        coffeeId: brewLedgerEntries.coffeeId,
-        ledgerCount: count(),
-        lastBrewedAt: sql<Date | null>`max(${brewLedgerEntries.brewedAt})`,
-      })
-      .from(brewLedgerEntries)
-      .groupBy(brewLedgerEntries.coffeeId),
-    listCoffeeBagRows(),
-  ]);
-
-  const recipeCountMap = new Map(
-    recipeCountRows.map((row) => [row.coffeeId, row.recipeCount]),
-  );
-  const ledgerStatsMap = new Map(
-    ledgerStatsRows.map((row) => [
-      row.coffeeId,
-      {
-        ledgerCount: row.ledgerCount,
-        lastBrewedAt: row.lastBrewedAt,
+  const coffeeRows = await db.query.coffees.findMany({
+    orderBy: (table, helpers) => [helpers.desc(table.createdAt)],
+    with: {
+      recipes: {
+        columns: { id: true },
       },
-    ]),
-  );
-  const bagRowsByCoffee = groupBagRowsByCoffee(bagRows);
+      ledgerEntries: {
+        columns: {
+          id: true,
+          brewedAt: true,
+        },
+      },
+      bags: {
+        columns: {
+          id: true,
+          coffeeId: true,
+          openedAt: true,
+          finishedAt: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+        orderBy: (table, helpers) => [helpers.desc(table.openedAt), helpers.desc(table.id)],
+      },
+    },
+  });
 
   return coffeeRows
     .map((row) => {
-      const ledgerStats = ledgerStatsMap.get(row.id);
+      const lastBrewedAt =
+        row.ledgerEntries.reduce<Date | null>(
+          (latest, entry) =>
+            latest == null || entry.brewedAt.getTime() > latest.getTime()
+              ? entry.brewedAt
+              : latest,
+          null,
+        );
+
       return serializeCoffeeSummaryFromCounts(
         row,
-        recipeCountMap.get(row.id) ?? 0,
-        ledgerStats?.ledgerCount ?? 0,
-        ledgerStats?.lastBrewedAt,
-        bagRowsByCoffee.get(row.id) ?? [],
+        row.recipes.length,
+        row.ledgerEntries.length,
+        lastBrewedAt,
+        row.bags,
       );
     })
     .filter((coffee) => matchesCoffeeListFilters(coffee, filters))
@@ -602,7 +726,7 @@ export async function getCoffeePageDetailById(
     ...serializeCoffeeSummaryFromCounts(
       row,
       recipes.length,
-      ledgerCountRow?.value ?? 0,
+      coerceCount(ledgerCountRow?.value ?? 0),
       latestLedgerRow?.brewedAt,
       bagRows,
     ),
@@ -828,7 +952,7 @@ export async function listLedgerEntriesByCoffee(
     entries,
     nextCursor: hasMore && lastRow
       ? {
-          brewedAt: lastRow.brewedAt.toISOString(),
+          brewedAt: toIsoStringRequired(lastRow.brewedAt),
           id: lastRow.id,
         }
       : null,
