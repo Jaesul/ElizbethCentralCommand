@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Wifi, WifiOff } from "lucide-react";
+import { SafeLucide } from "~/components/SafeLucide";
 import { Drawer } from "~/components/ui/drawer";
 import { ConnectionStatusDrawer } from "~/components/ConnectionStatusDrawer";
 import type { FlowConnectionState } from "~/hooks/useFlowProfilingWebSocket";
@@ -95,9 +96,9 @@ export function FloatingConnectionIcon({
         <div className="relative">
           {/* Icon */}
           {isConnected || isWarning ? (
-            <Wifi className={cn("size-6", iconClass)} />
+            <SafeLucide icon={Wifi} className={cn("size-6", iconClass)} />
           ) : (
-            <WifiOff className={cn("size-6", iconClass)} />
+            <SafeLucide icon={WifiOff} className={cn("size-6", iconClass)} />
           )}
           {/* ESP dot indicator */}
           <div

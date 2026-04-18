@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Pencil, Plus } from "lucide-react";
+import { SafeLucide } from "~/components/SafeLucide";
 
 import { useFlowConnection } from "~/components/FlowConnectionProvider";
 import { Button } from "~/components/ui/button";
@@ -184,9 +185,9 @@ export function CoffeeFormDialog({
         <Button variant={triggerVariant}>
           {showIcon ? (
             isEditMode ? (
-              <Pencil className="mr-2 h-4 w-4" />
+              <SafeLucide icon={Pencil} className="mr-2 h-4 w-4" />
             ) : (
-              <Plus className="mr-2 h-4 w-4" />
+              <SafeLucide icon={Plus} className="mr-2 h-4 w-4" />
             )
           ) : null}
           {triggerLabel ?? defaultLabel}
